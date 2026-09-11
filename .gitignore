@@ -1,0 +1,19 @@
+# Generated standardized files
+*_standardized.mat
+*_standardized_meta.json
+*_review.xlsx
+
+# MATLAB generated files
+*.asv
+*.m~
+
+# MATLAB cache
+*.mlappinstall
+slprj/
+sccprj/
+legancy/
+DRFDOT/
+
+# OS files
+Thumbs.db
+.DS_Store
