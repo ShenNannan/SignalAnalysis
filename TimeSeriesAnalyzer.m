@@ -256,6 +256,8 @@ classdef TimeSeriesAnalyzer < handle
                 cm = uicontextmenu(obj.MainFigure);
                 uimenu(cm, 'Text', '设置采样率...', ...
                     'Callback', @(src, evt) obj.OnSetSampleRateForSelected(d));
+                uimenu(cm, 'Text', '导出 Excel...', ...
+                    'Callback', @(src, evt) obj.OnExportDatasetExcel(d));
                 set(h, 'UIContextMenu', cm);
 
                 obj.ChannelControls{end+1} = struct('handle', h, 'type', 'header', ...
@@ -645,6 +647,18 @@ classdef TimeSeriesAnalyzer < handle
             end
         end
 
+        function newRate = ShowSampleRateDialog(~, dsName)
+        % ShowSampleRateDialog 采样率输入对话框，取消返回 []
+
+            answer = inputdlg(sprintf('数据集: %s\n采样率 (Hz):', dsName), ...
+                '设置采样率', 1, {''});
+            if isempty(answer)
+                newRate = [];
+                return;
+            end
+            newRate = str2double(answer{1});
+        end
+
         function OnChannelSliceDialog(obj, datasetIdx, colIdx)
         % OnChannelSliceDialog 右键设置通道切片范围
             axIdx = obj.Session.FocusedAxes;
@@ -689,6 +703,21 @@ classdef TimeSeriesAnalyzer < handle
             analysisType = obj.Session.GetAxesAnalysisType(axIdx);
             obj.AnalysisEngine_.RunAnalysis(axIdx, analysisType);
             obj.RebuildChannelList();
+        end
+
+        function [startRow, segLen] = ShowSliceDialog(~, colName, totalRows, currentStart, currentLen)
+        % ShowSliceDialog 切片范围输入对话框（起点 + 长度，支持环形缓冲），取消返回 []
+
+            answer = inputdlg({'起点行号:', '长度:'}, ...
+                sprintf('设置切片范围 - %s (共 %d 行)', colName, totalRows), ...
+                1, {num2str(currentStart), num2str(currentLen)});
+            if isempty(answer)
+                startRow = [];
+                segLen = [];
+                return;
+            end
+            startRow = round(str2double(answer{1}));
+            segLen = round(str2double(answer{2}));
         end
 
         function OnChannelSliceReset(obj, datasetIdx, colIdx)
@@ -1211,14 +1240,27 @@ classdef TimeSeriesAnalyzer < handle
                 sa_column_names = newNames; %#ok<NASGU>
                 save(matPath, 'sa_column_names', '-append');
                 DataReaderFactory.UpdateColumnNamesInMeta(matPath, newNames);
-                xlsxPath = strrep(matPath, '_standardized.mat', '_review.xlsx');
-                try
-                    DataReaderFactory.ExportToExcel(matPath, xlsxPath);
-                catch
-                end
             end
 
             % 3. 刷新显示（UpdateDataset 已触发 DatasetsUpdated → RebuildChannelList）
+        end
+
+        function OnExportDatasetExcel(obj, datasetIdx)
+        % OnExportDatasetExcel 手动导出数据集为 Excel（_review.xlsx）
+
+            matPath = obj.Session.GetDatasetMatPath(datasetIdx);
+            if isempty(matPath) || ~exist(matPath, 'file')
+                errordlg('数据集无对应 .mat 文件，无法导出', '错误');
+                return;
+            end
+
+            xlsxPath = strrep(matPath, '_standardized.mat', '_review.xlsx');
+            try
+                DataReaderFactory.ExportToExcel(matPath, xlsxPath);
+                msgbox(sprintf('已导出:\n%s', xlsxPath), '导出完成');
+            catch e
+                errordlg(sprintf('导出失败:\n%s', e.message), '错误');
+            end
         end
 
         function ShowSpectrumPopup(obj, chans, analysisType)

@@ -393,7 +393,7 @@ classdef DataReaderFactory
         end
 
         function matPath = ImportToStandard(filePath, outputDir, varargin)
-        % ImportToStandard 阶段一：原始文件 → 标准化 .mat + _meta.json + _review.xlsx
+        % ImportToStandard 阶段一：原始文件 → 标准化 .mat + _meta.json
         %
         % 可选参数：
         %   NoCache       - logical 跳过缓存检查
@@ -518,6 +518,60 @@ classdef DataReaderFactory
                 writecell(allData, xlsxPath);
             else
                 xlswrite(xlsxPath, allData);
+            end
+        end
+
+        function curves = ExtractFrfCurves(dataset)
+        % ExtractFrfCurves 从 FRF 数据集提取频响曲线
+        %
+        % 输入：
+        %   dataset - Dataset 对象。
+        %     4 列        → 单曲线，列角色固定 [amp, phase, corr, freq]
+        %     4K 列       → 每 4 列一组切 K 条曲线（dsa_frf 多曲线文件）
+        %     3K+1 列     → 第 1 列为共享 Freq，其余每 3 列 [amp, phase, corr]
+        % 输出：
+        %   curves - struct array：name/freq/amp/phase/corr（均为 [N×1] double）
+
+            nCols = dataset.ColumnCount;
+            [~, baseName] = fileparts(dataset.SourcePath);
+            baseName = strrep(baseName, '_standardized', '');
+
+            if nCols == 4
+                curves = struct();
+                curves.name = baseName;
+                curves.freq = dataset.GetColumn(4);
+                curves.amp = dataset.GetColumn(1);
+                curves.phase = dataset.GetColumn(2);
+                curves.corr = dataset.GetColumn(3);
+                return;
+            end
+
+            if mod(nCols, 4) == 0
+                k = nCols / 4;
+                curves = struct('name', {}, 'freq', {}, 'amp', {}, 'phase', {}, 'corr', {});
+                for i = 1:k
+                    base = (i - 1) * 4;
+                    curves(i).name = sprintf('%s#%d', baseName, i);
+                    curves(i).freq = dataset.GetColumn(base + 4);
+                    curves(i).amp = dataset.GetColumn(base + 1);
+                    curves(i).phase = dataset.GetColumn(base + 2);
+                    curves(i).corr = dataset.GetColumn(base + 3);
+                end
+            elseif mod(nCols - 1, 3) == 0 && nCols > 4
+                k = (nCols - 1) / 3;
+                sharedFreq = dataset.GetColumn(1);
+                curves = struct('name', {}, 'freq', {}, 'amp', {}, 'phase', {}, 'corr', {});
+                for i = 1:k
+                    base = 1 + (i - 1) * 3;
+                    curves(i).name = sprintf('%s#%d', baseName, i);
+                    curves(i).freq = sharedFreq;
+                    curves(i).amp = dataset.GetColumn(base + 1);
+                    curves(i).phase = dataset.GetColumn(base + 2);
+                    curves(i).corr = dataset.GetColumn(base + 3);
+                end
+            else
+                error('SignalAnalysis:DataReaderFactory:InvalidFrfLayout', ...
+                    '无法识别 FRF 列布局: %d 列', nCols);
             end
         end
 
@@ -1156,7 +1210,8 @@ classdef DataReaderFactory
         end
 
         function matPath = SaveStandard(data, colNames, outputDir, baseName, sourcePath, formatTag)
-        % SaveStandard 保存标准化结果（.mat + _meta.json + _review.xlsx）
+        % SaveStandard 保存标准化结果（.mat + _meta.json）
+        % Excel 导出改为手动：DataReaderFactory.ExportToExcel
             if ~exist(outputDir, 'dir')
                 mkdir(outputDir);
             end
@@ -1200,13 +1255,6 @@ classdef DataReaderFactory
 
             jsonPath = fullfile(outputDir, [baseName '_standardized_meta.json']);
             DataReaderFactory.WriteJson(jsonPath, meta);
-
-            % 保存 _review.xlsx
-            xlsxPath = fullfile(outputDir, [baseName '_review.xlsx']);
-            try
-                DataReaderFactory.ExportToExcel(matPath, xlsxPath);
-            catch
-            end
         end
 
         function columns = BuildColumnMeta(colNames, units, descriptions, nCols)
@@ -1589,7 +1637,12 @@ classdef DataReaderFactory
                 data(i, 1:length(row)) = row;
             end
 
-            formatTag = 'fdot_text';
+            if ~isempty(titleLine) && contains(titleLine, 'DSA_data')
+                % DSA FRF 频响数据：列角色固定 [amp, phase, corr, freq]
+                formatTag = 'dsa_frf';
+            else
+                formatTag = 'fdot_text';
+            end
         end
 
         function [data, columnNames, formatTag] = ParseSwppText(filePath)

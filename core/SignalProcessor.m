@@ -40,34 +40,6 @@ classdef SignalProcessor
             result.Phase = phase;
         end
 
-        function result = ComputePSD(signal, sampleRate)
-        % ComputePSD 计算功率谱密度
-        %
-        % 输入：
-        %   signal     - [N×1 double] 时域信号
-        %   sampleRate - double 采样率 Hz
-        %
-        % 输出：
-        %   result.Power     [P×1 double] 功率谱密度
-        %   result.Frequency [P×1 double] 频率轴 Hz
-
-            validateattributes(signal, {'numeric'}, {'vector'});
-            validateattributes(sampleRate, {'numeric'}, {'positive', 'scalar'});
-
-            signal = signal(:);
-            N = length(signal);
-
-            windowLength = min(256, N);
-            noverlap = floor(windowLength / 2);
-            nfft = max(256, 2^nextpow2(windowLength));
-
-            [pxx, f] = pwelch(signal, windowLength, noverlap, nfft, sampleRate);
-
-            result = struct();
-            result.Power = pxx;
-            result.Frequency = f;
-        end
-
         function [cumRms, f, totalRms] = ComputeCumulativeRMS(signal, sampleRate)
         % ComputeCumulativeRMS 计算累积 RMS 曲线 (基于 pwelch PSD)
         %
