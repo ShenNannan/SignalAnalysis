@@ -86,13 +86,19 @@ classdef TransferFunctionView < handle
             hold(obj.AmpAxes, 'off');
             hold(obj.PhaseAxes, 'off');
             hold(obj.CorrAxes, 'off');
-
-            if nPlotted > 1
-                legend(obj.AmpAxes);
-                legend(obj.PhaseAxes);
-                legend(obj.CorrAxes);
-            end
             ylim(obj.CorrAxes, [0 1]);
+
+            % legend 在隐藏页签内创建会得到空条目（MATLAB 渲染初始化限制），
+            % 统一走 RefreshLegends：切换页签可见后由 app 再次触发
+            obj.RefreshLegends();
+        end
+
+        function RefreshLegends(obj)
+        % RefreshLegends 为三张子图重建 legend（页签切换可见后由 app 调用）
+            obj.CleanupBrokenLegends();
+            obj.RefreshLegendFor(obj.AmpAxes);
+            obj.RefreshLegendFor(obj.PhaseAxes);
+            obj.RefreshLegendFor(obj.CorrAxes);
         end
 
         function ShowLoading(obj, msg)
@@ -173,6 +179,37 @@ classdef TransferFunctionView < handle
 
         function OnCurveEdit(obj, e)
             notify(obj, 'CurveSelectionChanged', struct('row', e.Indices(1)));
+        end
+
+        function CleanupBrokenLegends(obj)
+        % CleanupBrokenLegends 删除空条目 legend（隐藏页签内创建产生的工件）
+            fig = ancestor(obj.Grid_, 'figure');
+            legs = findobj(fig, 'Type', 'legend');
+            for i = 1:numel(legs)
+                if isempty(legs(i).PlotChildren)
+                    delete(legs(i));
+                end
+            end
+        end
+
+        function RefreshLegendFor(obj, ax)
+        % RefreshLegendFor 为指定 uiaxes 重建 legend（若无 legend 且 ≥2 条线）
+            fig = ancestor(obj.Grid_, 'figure');
+            legs = findobj(fig, 'Type', 'legend');
+            hasLegend = false;
+            for i = 1:numel(legs)
+                kids = legs(i).PlotChildren;
+                if ~isempty(kids) && any(arrayfun(@(k) isequal(ancestor(k, 'axes'), ax), kids))
+                    hasLegend = true;
+                end
+            end
+            if hasLegend
+                return;
+            end
+            lines = findobj(ax, 'Type', 'line');
+            if numel(lines) >= 2
+                legend(ax);
+            end
         end
     end
 end

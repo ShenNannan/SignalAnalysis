@@ -181,8 +181,6 @@ classdef DataReaderFactory
                     [data, rawNames, formatTag] = DataReaderFactory.ParseMatFile(filePath);
                 case {'.xlsx', '.xls'}
                     [data, rawNames, formatTag] = DataReaderFactory.ParseExcelFile(filePath);
-                case '.frfx'
-                    [data, rawNames, formatTag] = DataReaderFactory.ParseFrfxFile(filePath);
                 case ''
                     [data, rawNames, formatTag] = DataReaderFactory.ParseDatFile(filePath);
                 otherwise
@@ -882,12 +880,13 @@ classdef DataReaderFactory
                 end
             end
 
-            % 多通道处理（各自独立）
+            % 多通道处理（各自独立，名称追加文件基名避免同目录多文件互相覆盖）
             for i = 1:length(multiParsed)
                 item = multiParsed{i};
                 [colNames, cleanData] = DataReaderFactory.MatchColumnNames(...
                     item.rawNames, item.data);
-                multiName = DataReaderFactory.GetDirectoryName(item.path, rootDir);
+                multiName = sprintf('%s_%s', ...
+                    DataReaderFactory.GetDirectoryName(item.path, rootDir), item.fname);
                 matPath = DataReaderFactory.SaveStandard(cleanData, colNames, outputDir, ...
                     multiName, item.path, item.formatTag);
                 results{end+1} = struct('name', multiName, 'matPath', matPath, ...
@@ -1885,62 +1884,6 @@ classdef DataReaderFactory
                     if startsWith(line, '['), continue; end
                     columnNames{end+1} = line; %#ok<AGROW>
                 end
-            end
-        end
-
-        function [data, columnNames, formatTag] = ParseFrfxFile(filePath)
-        % ParseFrfxFile FRFX 传函格式：多段 freq/amp/phase 数据
-
-            fieldList = {'Measure_Closed_Loop_Data'; ...
-                         'Measure_Open_Loop_Data'; ...
-                         'Measure_Controller_Data'; ...
-                         'Measure_Plant_Data'; ...
-                         'Design_Closed_Loop_Data'; ...
-                         'Design_Open_Loop_Data'; ...
-                         'Design_Controller_Data'; ...
-                         'Design_Plant_Data'};
-
-            fid = fopen(filePath, 'r');
-            if fid < 0
-                error('SignalAnalysis:DataReaderFactory:FileOpenFailed', ...
-                    'Cannot open file: %s', filePath);
-            end
-            cleanup = onCleanup(@() fclose(fid));
-
-            data = [];
-            columnNames = {'Frequency', 'Amplitude', 'Phase'};
-
-            while ~feof(fid)
-                tline = fgetl(fid);
-                if ~ischar(tline), break; end
-
-                for jj = 1:length(fieldList)
-                    if contains(tline, fieldList{jj})
-                        % 跳过 Label 行
-                        fgetl(fid);
-                        fgetl(fid);
-
-                        % 读取数据行直到 '];'
-                        rows = {};
-                        while true
-                            tline = fgetl(fid);
-                            if ~ischar(tline), break; end
-                            if contains(tline, '];'), break; end
-                            parts = textscan(tline, '%s', 'Delimiter', ',', ...
-                                'MultipleDelimsAsOne', 1);
-                            rows{end+1} = str2double(parts{1})'; %#ok<AGROW>
-                        end
-
-                        data = vertcat(rows{:});
-                        formatTag = 'frfx';
-                        return;
-                    end
-                end
-            end
-
-            if isempty(data)
-                error('SignalAnalysis:DataReaderFactory:ParseFailed', ...
-                    'No data sections found in .frfx file');
             end
         end
 

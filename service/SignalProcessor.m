@@ -4,42 +4,6 @@ classdef SignalProcessor
 % 无状态，无副作用。所有方法 Static。
 
     methods (Static)
-        function result = ComputeFFT(signal, sampleTime)
-        % ComputeFFT 计算单边幅值谱
-        %
-        % 输入：
-        %   signal     - [N×1 double] 时域信号
-        %   sampleTime - double 采样周期 (s)
-        %
-        % 输出：
-        %   result.Amplitude  [K×1 double] 单边幅值谱
-        %   result.Frequency  [K×1 double] 频率轴 Hz
-        %   result.Phase      [K×1 double] 相位谱 度
-        %   其中 K = floor((N+1)/2)
-
-            validateattributes(signal, {'numeric'}, {'vector'});
-            validateattributes(sampleTime, {'numeric'}, {'positive', 'scalar'});
-
-            signal = signal(:);
-            N = length(signal);
-            Fs = 1 / sampleTime;
-
-            Y = fft(signal);
-            K = floor((N+1)/2);
-
-            amplitude = 2 * abs(Y(1:K)) / N;
-            amplitude(1) = amplitude(1) / 2;
-
-            frequency = (0:K-1)' * Fs / N;
-
-            phase = angle(Y(1:K)) * 180 / pi;
-
-            result = struct();
-            result.Amplitude = amplitude;
-            result.Frequency = frequency;
-            result.Phase = phase;
-        end
-
         function [cumRms, f, totalRms] = ComputeCumulativeRMS(signal, sampleRate)
         % ComputeCumulativeRMS 计算累积 RMS 曲线 (基于 pwelch PSD)
         %

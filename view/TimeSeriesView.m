@@ -134,11 +134,19 @@ classdef TimeSeriesView < handle
                 plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'DisplayName', labels{c});
             end
             hold(ax, 'off');
-            if numel(yCell) > 1
-                legend(ax);
-            end
             grid(ax, 'on');
             ylabel(ax, 'Amplitude');
+
+            % legend 在隐藏页签内创建会得到空条目，统一走 RefreshLegendFor
+            obj.RefreshLegendFor(ax);
+        end
+
+        function RefreshLegends(obj)
+        % RefreshLegends 为全部 axes 重建 legend（页签切换可见后由 app 调用）
+            obj.CleanupBrokenLegends();
+            for i = 1:obj.AxesCount_
+                obj.RefreshLegendFor(obj.AxesHandles_{i});
+            end
         end
 
         function ShowLoading(obj, msg)
@@ -409,6 +417,37 @@ classdef TimeSeriesView < handle
                 return;
             end
             notify(obj, 'NormClicked', struct('mode', modes{idx}));
+        end
+
+        function CleanupBrokenLegends(obj)
+        % CleanupBrokenLegends 删除空条目 legend（隐藏页签内创建产生的工件）
+            fig = ancestor(obj.Grid_, 'figure');
+            legs = findobj(fig, 'Type', 'legend');
+            for i = 1:numel(legs)
+                if isempty(legs(i).PlotChildren)
+                    delete(legs(i));
+                end
+            end
+        end
+
+        function RefreshLegendFor(obj, ax)
+        % RefreshLegendFor 为指定 uiaxes 重建 legend（若无 legend 且 ≥2 条线）
+            fig = ancestor(obj.Grid_, 'figure');
+            legs = findobj(fig, 'Type', 'legend');
+            hasLegend = false;
+            for i = 1:numel(legs)
+                kids = legs(i).PlotChildren;
+                if ~isempty(kids) && any(arrayfun(@(k) isequal(ancestor(k, 'axes'), ax), kids))
+                    hasLegend = true;
+                end
+            end
+            if hasLegend
+                return;
+            end
+            lines = findobj(ax, 'Type', 'line');
+            if numel(lines) >= 2
+                legend(ax);
+            end
         end
     end
 end

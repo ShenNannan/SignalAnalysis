@@ -37,6 +37,10 @@ classdef SignalAnalysisApp < handle
             tabTS = uitab(obj.TabGroup, 'Title', '时域分析');
             tabTF = uitab(obj.TabGroup, 'Title', '传函分析');
 
+            % 隐藏页签内的 axes 首次可见前无法正确创建 legend，
+            % 切换页签后刷新对应视图的 legend
+            obj.TabGroup.SelectionChangedFcn = @(s, e) obj.OnTabChanged();
+
             obj.StatusBar = uilabel(mainGrid, ...
                 'Text', ' ', ...
                 'HorizontalAlignment', 'left', ...
@@ -48,7 +52,7 @@ classdef SignalAnalysisApp < handle
             obj.TransferFunctionView_ = TransferFunctionView(tabTF);
 
             obj.TimeSeriesPresenter_ = [];
-            obj.TransferFunctionPresenter_ = [];
+            obj.TransferFunctionPresenter_ = TransferFunctionPresenter(obj.TransferFunctionView_);
         end
 
         function SetStatusText(obj, txt)
@@ -66,6 +70,16 @@ classdef SignalAnalysisApp < handle
     end
 
     methods (Access = private)
+        function OnTabChanged(obj)
+        % OnTabChanged 页签切换：新可见视图重建 legend（隐藏页签内创建无效）
+            % Children(1)=时域分析, Children(2)=传函分析（按创建顺序）
+            if isequal(obj.TabGroup.SelectedTab, obj.TabGroup.Children(2))
+                obj.TransferFunctionView_.RefreshLegends();
+            else
+                obj.TimeSeriesView_.RefreshLegends();
+            end
+        end
+
         function OnClose(obj)
         % OnClose 用户关闭窗口：先销毁 Presenter，再删窗口
             if ~isempty(obj.TransferFunctionPresenter_)
