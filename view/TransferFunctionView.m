@@ -126,7 +126,8 @@ classdef TransferFunctionView < handle
         function BuildTopBar(obj)
             top = uigridlayout(obj.Grid_, [1 4], ...
                 'ColumnWidth', {70, '1x', 90, 70}, ...
-                'ColumnSpacing', 6);
+                'ColumnSpacing', 6, ...
+                'Padding', [2 2 2 2]);
             top.Layout.Row = 1;
 
             uilabel(top, 'Text', '数据路径:', 'HorizontalAlignment', 'right');

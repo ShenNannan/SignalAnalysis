@@ -13,8 +13,12 @@ classdef SignalAnalysisApp < handle
         StatusBar                   % uilabel 底部状态栏
         TimeSeriesView_             % TimeSeriesView
         TransferFunctionView_       % TransferFunctionView
-        TimeSeriesPresenter_        % TimeSeriesPresenter（阶段4 接入）
-        TransferFunctionPresenter_  % TransferFunctionPresenter（阶段3 接入）
+        TimeSeriesPresenter_        % TimeSeriesPresenter
+        TransferFunctionPresenter_  % TransferFunctionPresenter
+    end
+
+    properties (Access = private)
+        PendingLegendRefresh_       % logical 页签切换后待刷新 legend
     end
 
     methods
@@ -22,7 +26,10 @@ classdef SignalAnalysisApp < handle
             obj.Fig = uifigure( ...
                 'Name', 'Signal Analysis Toolbox', ...
                 'Position', [100 100 1200 700], ...
-                'CloseRequestFcn', @(src, evt) obj.OnClose());
+                'CloseRequestFcn', @(src, evt) obj.OnClose(), ...
+                'WindowButtonMotionFcn', @(src, evt) obj.OnMouseMoved());
+
+            obj.PendingLegendRefresh_ = false;
 
             mainGrid = uigridlayout(obj.Fig, [2 1], ...
                 'RowHeight', {'1x', 24}, ...
@@ -53,6 +60,8 @@ classdef SignalAnalysisApp < handle
 
             obj.TimeSeriesPresenter_ = TimeSeriesPresenter(obj.TimeSeriesView_, @obj.SetStatusText);
             obj.TransferFunctionPresenter_ = TransferFunctionPresenter(obj.TransferFunctionView_);
+
+            SignalAnalysisApp.SettleUI();
         end
 
         function SetStatusText(obj, txt)
@@ -69,9 +78,32 @@ classdef SignalAnalysisApp < handle
         end
     end
 
+    methods (Static, Access = private)
+        function SettleUI()
+        % SettleUI 泵渲染队列直至 uigridlayout 布局完成
+        % 部分会话中 uifigure 布局在事件循环空闲时才惰性处理，
+        % 导致窗口已显示而控件仍停留默认位置（按钮"无显示"）。
+            for k = 1:40
+                drawnow;
+                pause(0.025);
+            end
+        end
+    end
+
     methods (Access = private)
         function OnTabChanged(obj)
-        % OnTabChanged 页签切换：新可见视图重建 legend（隐藏页签内创建无效）
+        % OnTabChanged 页签切换：可见性变化在回调返回后才传播，
+        % 置标志待首次鼠标移动时刷新 legend（隐藏页签内创建的 legend 为空）
+            obj.PendingLegendRefresh_ = true;
+            drawnow;
+        end
+
+        function OnMouseMoved(obj)
+        % OnMouseMoved 首次鼠标移动时补刷新页签切换后的 legend
+            if ~obj.PendingLegendRefresh_
+                return;
+            end
+            obj.PendingLegendRefresh_ = false;
             % Children(1)=时域分析, Children(2)=传函分析（按创建顺序）
             if isequal(obj.TabGroup.SelectedTab, obj.TabGroup.Children(2))
                 obj.TransferFunctionView_.RefreshLegends();
