@@ -18,7 +18,9 @@ classdef TimeSeriesView < handle
     end
 
     properties (Access = private)
-        ChannelRows_    % struct array：datasetIdx/colIdx/label/datasetName/checked
+        ChannelRows_    % struct array：isParent/parentIdx/datasetIdx/colIdx/label/datasetName/checked
+        ExpandedSets_   % containers.Map: datasetIdx → logical（展开状态）
+        VisibleRowMap_  % 可见行号 → ChannelRows_ 索引映射
     end
 
     events
@@ -31,6 +33,7 @@ classdef TimeSeriesView < handle
         LayoutChanged           % 载荷 struct('mode',..)
         ExportClicked
         ExportExcelClicked      % 载荷 struct('datasetIdx',..)
+        SetSampleRateClicked    % 载荷 struct('datasetIdx',..)
         ClearPlotClicked
         FftClicked
         PsdClicked
@@ -54,6 +57,8 @@ classdef TimeSeriesView < handle
             obj.LayoutMode_ = 'single';
             obj.FocusedAxes_ = 1;
             obj.ChannelRows_ = struct([]);
+            obj.ExpandedSets_ = containers.Map('KeyType', 'double', 'ValueType', 'logical');
+            obj.VisibleRowMap_ = [];
             obj.LoadingDlg_ = [];
 
             obj.BuildChannelPanel();
@@ -64,19 +69,56 @@ classdef TimeSeriesView < handle
         % ---- 通道表 ----
 
         function SetChannelTable(obj, rows)
-        % SetChannelTable 填充通道表（rows: datasetIdx/colIdx/label/datasetName/checked）
+        % SetChannelTable 填充通道表（折叠/展开模式）
+        % rows 字段：isParent, parentIdx, datasetIdx, colIdx, label, datasetName, checked
+        % 默认折叠：只显示数据集名行；点击展开显示通道
             obj.ChannelRows_ = rows;
             n = numel(rows);
-            checked = false(n, 1);
-            chNames = cell(n, 1);
-            dsNames = cell(n, 1);
-            for i = 1:n
-                checked(i) = rows(i).checked;
-                chNames{i} = rows(i).label;
-                dsNames{i} = rows(i).datasetName;
+
+            % 同步展开状态：新数据集默认折叠
+            allDs = unique(arrayfun(@(r) r.datasetIdx, rows));
+            for k = 1:numel(allDs)
+                if ~obj.ExpandedSets_.isKey(allDs(k))
+                    obj.ExpandedSets_(allDs(k)) = false;
+                end
             end
-            obj.ChannelTable.Data = table(checked, chNames, dsNames, ...
-                'VariableNames', {'选择', '通道', '数据集'});
+
+            % 构建可见行
+            checked = {};
+            names = {};
+            visMap = [];
+            for i = 1:n
+                r = rows(i);
+                if r.isParent
+                    checked{end+1} = r.checked; %#ok<AGROW>
+                    dsIdx = r.datasetIdx;
+                    if obj.ExpandedSets_.isKey(dsIdx) && obj.ExpandedSets_(dsIdx)
+                        names{end+1} = ['▼ ' r.label]; %#ok<AGROW>
+                    else
+                        names{end+1} = ['▶ ' r.label]; %#ok<AGROW>
+                    end
+                    visMap(end+1) = i; %#ok<AGROW>
+                else
+                    pIdx = r.parentIdx;
+                    if pIdx > 0 && rows(pIdx).isParent
+                        dsIdx = rows(pIdx).datasetIdx;
+                        if obj.ExpandedSets_.isKey(dsIdx) && obj.ExpandedSets_(dsIdx)
+                            checked{end+1} = r.checked; %#ok<AGROW>
+                            names{end+1} = ['    ' r.label]; %#ok<AGROW>
+                            visMap(end+1) = i; %#ok<AGROW>
+                        end
+                    end
+                end
+            end
+            obj.VisibleRowMap_ = visMap;
+
+            if isempty(checked)
+                obj.ChannelTable.Data = table(logical([]), cell(0,1), ...
+                    'VariableNames', {'选择', '数据集'});
+            else
+                obj.ChannelTable.Data = table([checked{:}]', names(:), ...
+                    'VariableNames', {'选择', '数据集'});
+            end
         end
 
         function rows = GetChannelRows(obj)
@@ -134,7 +176,14 @@ classdef TimeSeriesView < handle
             cla(ax);
             hold(ax, 'on');
             for c = 1:numel(yCell)
-                plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'DisplayName', labels{c});
+                % 图例只显示通道名（去掉 "数据集 / " 前缀）
+                [~, shortLabel] = strtok(labels{c}, '/');
+                if isempty(shortLabel)
+                    displayName = labels{c};
+                else
+                    displayName = strtrim(shortLabel(2:end));
+                end
+                plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'DisplayName', displayName);
             end
             hold(ax, 'off');
             grid(ax, 'on');
@@ -185,21 +234,19 @@ classdef TimeSeriesView < handle
             left.Layout.Column = 1;
 
             obj.ChannelTable = uitable(left, ...
-                'ColumnName', {'选择', '通道', '数据集'}, ...
-                'ColumnEditable', [true false false], ...
-                'ColumnWidth', {36, '1x', '1x'}, ...
-                'SelectionType', 'row');
+                'ColumnName', {'选择', '数据集'}, ...
+                'ColumnEditable', [true false], ...
+                'ColumnWidth', {38, '1x'});
             obj.ChannelTable.Layout.Row = 1;
-            obj.ChannelTable.Data = table(false(0, 1), cell(0, 1), cell(0, 1), ...
-                'VariableNames', {'选择', '通道', '数据集'});
+            obj.ChannelTable.Data = table(false(0, 1), cell(0, 1), ...
+                'VariableNames', {'选择', '数据集'});
             obj.ChannelTable.CellEditCallback = @(s, e) obj.OnChannelEdit(e);
+            obj.ChannelTable.CellSelectionCallback = @(s, e) obj.OnChannelSelect(e);
 
             cm = uicontextmenu(ancestor(left, 'figure'));
-            uimenu(cm, 'Text', '勾选本数据集全部', ...
-                'MenuSelectedFcn', @(s, e) obj.OnContextAction('checkAll'));
-            uimenu(cm, 'Text', '取消本数据集全部', ...
-                'MenuSelectedFcn', @(s, e) obj.OnContextAction('uncheckAll'));
-            uimenu(cm, 'Text', '导出 Excel(本数据集)', ...
+            uimenu(cm, 'Text', '设置采样频率...', ...
+                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('setSampleRate'));
+            uimenu(cm, 'Text', '导出 Excel', ...
                 'MenuSelectedFcn', @(s, e) obj.OnContextAction('exportExcel'));
             uimenu(cm, 'Text', '重命名通道...', 'Separator', 'on', ...
                 'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('rename'));
@@ -239,15 +286,19 @@ classdef TimeSeriesView < handle
         end
 
         function BuildToolbar(obj, parent)
+            sq = 28;  % 小方按钮边长
             tb = uigridlayout(parent, [1 11], ...
-                'ColumnWidth', {34, 34, 34, 34, 60, 70, 50, 50, 100, 50, 50}, ...
-                'ColumnSpacing', 3, ...
-                'Padding', [2 2 2 2]);
+                'ColumnWidth', {sq, sq, sq, sq, 60, 48, '1x', 40, 40, 90, 44, 44}, ...
+                'RowHeight', {sq}, ...
+                'ColumnSpacing', 4, ...
+                'Padding', [4 4 4 4]);
             tb.Layout.Row = 1;
 
+            % --- 左侧：axes 布局 + 图形操作（等间距排列）---
             uibutton(tb, 'push', 'Text', '+', 'FontWeight', 'bold', ...
+                'FontSize', 14, ...
                 'ButtonPushedFcn', @(s, e) obj.OnAddAxesClicked());
-            uibutton(tb, 'push', 'Text', '×', ...
+            uibutton(tb, 'push', 'Text', char(8722), 'FontSize', 14, ...
                 'ButtonPushedFcn', @(s, e) obj.OnRemoveAxesClicked());
             uibutton(tb, 'push', 'Text', '||', ...
                 'ButtonPushedFcn', @(s, e) obj.OnLayoutClicked('single'));
@@ -255,8 +306,11 @@ classdef TimeSeriesView < handle
                 'ButtonPushedFcn', @(s, e) obj.OnLayoutClicked('dual'));
             uibutton(tb, 'push', 'Text', 'Export', ...
                 'ButtonPushedFcn', @(s, e) notify(obj, 'ExportClicked'));
-            uibutton(tb, 'push', 'Text', 'Clear Plot', ...
+            uibutton(tb, 'push', 'Text', 'Clear', ...
                 'ButtonPushedFcn', @(s, e) notify(obj, 'ClearPlotClicked'));
+            % 弹性间隔（推挤右侧数据操作按钮右对齐）
+            uipanel(tb, 'Visible', 'off', 'BorderType', 'none');
+            % --- 右侧：数据操作（以 Calc 为右起点）---
             uibutton(tb, 'push', 'Text', 'FFT', ...
                 'ButtonPushedFcn', @(s, e) notify(obj, 'FftClicked'));
             uibutton(tb, 'push', 'Text', 'PSD', ...
@@ -315,7 +369,7 @@ classdef TimeSeriesView < handle
                 return;
             end
             obj.SetLayout(mode);
-            notify(obj, 'LayoutChanged', struct('mode', mode));
+            notify(obj, 'LayoutChanged', AppEventData(struct('mode', mode)));
         end
 
         function RelayoutGrid(obj)
@@ -367,7 +421,7 @@ classdef TimeSeriesView < handle
                 x = e.IntersectionPoint(1);
                 y = e.IntersectionPoint(2);
             end
-            notify(obj, 'AxesClicked', struct('axesIdx', axesIdx, 'x', x, 'y', y));
+            notify(obj, 'AxesClicked', AppEventData(struct('axesIdx', axesIdx, 'x', x, 'y', y)));
         end
 
         function UpdateAxesHighlight(obj)
@@ -377,10 +431,12 @@ classdef TimeSeriesView < handle
                     ax.Box = 'on';
                     ax.XColor = [0.8 0.2 0.2];
                     ax.YColor = [0.8 0.2 0.2];
+                    ax.LineWidth = 1.5;
                 else
                     ax.Box = 'off';
                     ax.XColor = [0.15 0.15 0.15];
                     ax.YColor = [0.15 0.15 0.15];
+                    ax.LineWidth = 0.5;
                 end
             end
         end
@@ -388,45 +444,85 @@ classdef TimeSeriesView < handle
         % ---- 通道表回调 ----
 
         function OnChannelEdit(obj, e)
-            row = e.Indices(1);
-            if isempty(obj.ChannelRows_) || row > numel(obj.ChannelRows_)
+        % OnChannelEdit 复选框勾选（只负责通道勾选，不触发展开/折叠）
+            visRow = e.Indices(1);
+            if visRow < 1 || visRow > numel(obj.VisibleRowMap_)
                 return;
             end
-            r = obj.ChannelRows_(row);
-            val = obj.ChannelTable.Data{row, 1};
-            notify(obj, 'ChannelCheckChanged', ...
-                struct('datasetIdx', r.datasetIdx, 'colIdx', r.colIdx, 'checked', val));
+            internalIdx = obj.VisibleRowMap_(visRow);
+            r = obj.ChannelRows_(internalIdx);
+            val = logical(obj.ChannelTable.Data{visRow, 1});
+
+            if r.isParent
+                dsIdx = r.datasetIdx;
+                obj.ChannelRows_(internalIdx).checked = val;
+                for i = 1:numel(obj.ChannelRows_)
+                    if ~obj.ChannelRows_(i).isParent && obj.ChannelRows_(i).datasetIdx == dsIdx
+                        obj.ChannelRows_(i).checked = val;
+                    end
+                end
+                obj.SetChannelTable(obj.ChannelRows_);
+                notify(obj, 'ChannelCheckChanged', ...
+                    AppEventData(struct('datasetIdx', dsIdx, 'colIdx', 0, 'checked', val)));
+            else
+                notify(obj, 'ChannelCheckChanged', ...
+                    AppEventData(struct('datasetIdx', r.datasetIdx, 'colIdx', r.colIdx, 'checked', val)));
+            end
+        end
+
+        function OnChannelSelect(obj, e)
+        % OnChannelSelect 点击行展开/折叠（只负责数据集展开，不改变勾选状态）
+            if isempty(e.Indices)
+                return;
+            end
+            visRow = e.Indices(1);
+            if visRow < 1 || visRow > numel(obj.VisibleRowMap_)
+                return;
+            end
+            internalIdx = obj.VisibleRowMap_(visRow);
+            r = obj.ChannelRows_(internalIdx);
+            if ~r.isParent
+                return;
+            end
+            dsIdx = r.datasetIdx;
+            if obj.ExpandedSets_.isKey(dsIdx)
+                obj.ExpandedSets_(dsIdx) = ~obj.ExpandedSets_(dsIdx);
+            else
+                obj.ExpandedSets_(dsIdx) = true;
+            end
+            obj.SetChannelTable(obj.ChannelRows_);
         end
 
         function OnContextAction(obj, action)
-            % 右键会先选中该行（SelectionType='row'），从 Selection 取行号
-            row = obj.GetContextRow();
-            if isempty(row)
+            sel = obj.ChannelTable.Selection;
+            if isempty(sel) || isempty(obj.VisibleRowMap_)
                 return;
             end
-            d = obj.ChannelRows_(row).datasetIdx;
+            rows = unique(sel(:, 1));  % 提取行号（兼容 cell/row 选择模式）
             switch action
                 case 'exportExcel'
-                    notify(obj, 'ExportExcelClicked', struct('datasetIdx', d));
-                case {'checkAll', 'uncheckAll'}
-                    newVal = strcmp(action, 'checkAll');
-                    for i = 1:numel(obj.ChannelRows_)
-                        if obj.ChannelRows_(i).datasetIdx == d
-                            obj.ChannelTable.Data{i, 1} = newVal;
-                        end
+                    for s = 1:numel(rows)
+                        visRow = rows(s);
+                        if visRow < 1 || visRow > numel(obj.VisibleRowMap_), continue; end
+                        ci = obj.VisibleRowMap_(visRow);
+                        r = obj.ChannelRows_(ci);
+                        if ~r.isParent, continue; end
+                        notify(obj, 'ExportExcelClicked', AppEventData(struct('datasetIdx', r.datasetIdx)));
                     end
-                    notify(obj, 'ChannelCheckChanged', ...
-                        struct('datasetIdx', d, 'colIdx', 0, 'checked', newVal));
             end
         end
 
         function OnContextChannelAction(obj, action)
-            row = obj.GetContextRow();
-            if isempty(row)
+            visRow = obj.GetContextRow();
+            if isempty(visRow)
                 return;
             end
-            r = obj.ChannelRows_(row);
-            payload = struct('datasetIdx', r.datasetIdx, 'colIdx', r.colIdx);
+            internalIdx = obj.VisibleRowMap_(visRow);
+            r = obj.ChannelRows_(internalIdx);
+            if r.isParent
+                return;
+            end
+            payload = AppEventData(struct('datasetIdx', r.datasetIdx, 'colIdx', r.colIdx));
             switch action
                 case 'rename'
                     notify(obj, 'RenameChannelClicked', payload);
@@ -434,18 +530,20 @@ classdef TimeSeriesView < handle
                     notify(obj, 'SliceDialogClicked', payload);
                 case 'sliceReset'
                     notify(obj, 'SliceResetClicked', payload);
+                case 'setSampleRate'
+                    notify(obj, 'SetSampleRateClicked', payload);
             end
         end
 
         function row = GetContextRow(obj)
-        % GetContextRow 右键命中的表格行号（右键先选中该行）
+        % GetContextRow 右键命中的可见表格行号
             row = [];
             sel = obj.ChannelTable.Selection;
-            if isempty(sel)
+            if isempty(sel) || isempty(obj.VisibleRowMap_)
                 return;
             end
             row = sel(1);
-            if isempty(obj.ChannelRows_) || row > numel(obj.ChannelRows_)
+            if row < 1 || row > numel(obj.VisibleRowMap_)
                 row = [];
             end
         end
@@ -457,7 +555,7 @@ classdef TimeSeriesView < handle
             if isempty(idx) || idx > numel(modes)
                 return;
             end
-            notify(obj, 'NormClicked', struct('mode', modes{idx}));
+            notify(obj, 'NormClicked', AppEventData(struct('mode', modes{idx})));
         end
 
         function CleanupBrokenLegends(obj)
@@ -487,7 +585,7 @@ classdef TimeSeriesView < handle
             end
             lines = findobj(ax, 'Type', 'line');
             if numel(lines) >= 2
-                legend(ax);
+                legend(ax, 'Interpreter', 'none');
             end
         end
     end

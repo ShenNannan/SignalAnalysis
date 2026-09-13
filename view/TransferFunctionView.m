@@ -2,16 +2,20 @@ classdef TransferFunctionView < handle
 % TransferFunctionView - 传函分析视图（FRF 频响查看器，哑终端）
 %
 % 只做控件装配、渲染与事件广播，零业务逻辑。
-% 布局：顶行（路径 + Browse/Import）| 左（曲线勾选表）右（幅值/相位/相关性 3 子图）
+% 布局：左（路径 + 曲线勾选表 + Browse/Import）| 右（幅值/相位/相关性 3 子图）
+% 与 TimeSeriesView 保持一致的左右分栏布局。
 
     properties (SetAccess = private)
         Grid_           % 顶层 uigridlayout
-        PathEdit        % uieditfield
         CurveTable      % uitable（logical 勾选列 + 曲线名列）
         AmpAxes         % uiaxes 幅值
         PhaseAxes       % uiaxes 相位
         CorrAxes        % uiaxes 相关性
         LoadingDlg_     % uiprogressdlg
+    end
+
+    properties (Access = private)
+        Path_           % 当前选择的路径
     end
 
     events
@@ -22,22 +26,22 @@ classdef TransferFunctionView < handle
 
     methods
         function obj = TransferFunctionView(parent)
-            obj.Grid_ = uigridlayout(parent, [2 1], ...
-                'RowHeight', {36, '1x'}, ...
-                'Padding', [8 8 8 8], ...
-                'RowSpacing', 6);
+            obj.Grid_ = uigridlayout(parent, [1 2], ...
+                'ColumnWidth', {'22x', '78x'}, ...
+                'Padding', [6 6 6 6], ...
+                'ColumnSpacing', 6);
             obj.LoadingDlg_ = [];
 
-            obj.BuildTopBar();
-            obj.BuildMainArea();
+            obj.BuildLeftPanel();
+            obj.BuildRightPanel();
         end
 
         function path = GetPath(obj)
-            path = obj.PathEdit.Value;
+            path = obj.Path_;
         end
 
         function SetPath(obj, path)
-            obj.PathEdit.Value = path;
+            obj.Path_ = path;
         end
 
         function SetCurveList(obj, names, checked)
@@ -123,39 +127,40 @@ classdef TransferFunctionView < handle
     end
 
     methods (Access = private)
-        function BuildTopBar(obj)
-            top = uigridlayout(obj.Grid_, [1 4], ...
-                'ColumnWidth', {70, '1x', 90, 70}, ...
-                'ColumnSpacing', 6, ...
-                'Padding', [2 2 2 2]);
-            top.Layout.Row = 1;
+        function BuildLeftPanel(obj)
+            left = uigridlayout(obj.Grid_, [2 1], ...
+                'RowHeight', {'1x', 36}, ...
+                'RowSpacing', 6, ...
+                'Padding', [0 0 0 0]);
+            left.Layout.Column = 1;
 
-            uilabel(top, 'Text', '数据路径:', 'HorizontalAlignment', 'right');
-            obj.PathEdit = uieditfield(top, 'text', 'Value', '');
-            uibutton(top, 'push', 'Text', 'Browse...', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'BrowseClicked'));
-            uibutton(top, 'push', 'Text', 'Import', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'ImportButtonClicked'));
-        end
-
-        function BuildMainArea(obj)
-            main = uigridlayout(obj.Grid_, [1 2], ...
-                'ColumnWidth', {240, '1x'}, ...
-                'ColumnSpacing', 6);
-            main.Layout.Row = 2;
-
-            obj.CurveTable = uitable(main, ...
+            % 曲线勾选表
+            obj.CurveTable = uitable(left, ...
                 'ColumnName', {'选择', '曲线'}, ...
                 'ColumnEditable', [true false], ...
-                'ColumnWidth', {36, '1x'});
-            obj.CurveTable.Layout.Column = 1;
+                'ColumnWidth', {38, '1x'});
+            obj.CurveTable.Layout.Row = 1;
             obj.CurveTable.Data = table(true(0, 1), cell(0, 1), ...
                 'VariableNames', {'选择', '曲线'});
             obj.CurveTable.CellEditCallback = @(s, e) obj.OnCurveEdit(e);
 
-            plots = uigridlayout(main, [3 1], ...
+            % Browse / Import 按钮
+            btns = uigridlayout(left, [1 2], ...
+                'ColumnWidth', {'1x', '1x'}, ...
+                'ColumnSpacing', 4, ...
+                'Padding', [0 0 0 0]);
+            btns.Layout.Row = 2;
+            uibutton(btns, 'push', 'Text', 'Browse...', ...
+                'ButtonPushedFcn', @(s, e) notify(obj, 'BrowseClicked'));
+            uibutton(btns, 'push', 'Text', 'Import', ...
+                'ButtonPushedFcn', @(s, e) notify(obj, 'ImportButtonClicked'));
+        end
+
+        function BuildRightPanel(obj)
+            plots = uigridlayout(obj.Grid_, [3 1], ...
                 'RowHeight', {'1x', '1x', '1x'}, ...
-                'RowSpacing', 4);
+                'RowSpacing', 4, ...
+                'Padding', [0 0 0 0]);
             plots.Layout.Column = 2;
 
             obj.AmpAxes = uiaxes(plots);
@@ -179,7 +184,7 @@ classdef TransferFunctionView < handle
         end
 
         function OnCurveEdit(obj, e)
-            notify(obj, 'CurveSelectionChanged', struct('row', e.Indices(1)));
+            notify(obj, 'CurveSelectionChanged', AppEventData(struct('row', e.Indices(1))));
         end
 
         function CleanupBrokenLegends(obj)
@@ -209,7 +214,7 @@ classdef TransferFunctionView < handle
             end
             lines = findobj(ax, 'Type', 'line');
             if numel(lines) >= 2
-                legend(ax);
+                legend(ax, 'Interpreter', 'none');
             end
         end
     end

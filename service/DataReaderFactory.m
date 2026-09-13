@@ -947,9 +947,9 @@ classdef DataReaderFactory
         function dirName = GetDirectoryName(filePath, rootDir)
         % GetDirectoryName 从文件路径提取目录名
         % 无 rootDir：返回父目录名（向后兼容）
-        % 有 rootDir：返回 rootDir名_相对路径（用 _ 连接）
+        % 有 rootDir：返回相对于 rootDir 的子路径（用 _ 连接）
         %   例：rootDir='Trace_data', filePath在 'Trace_data/20260310_161313/'
-        %   → 'Trace_data_20260310_161313'
+        %   → '20260310_161313'
             [dirPath, ~] = fileparts(filePath);
             if nargin >= 2 && ~isempty(rootDir)
                 % 规范化路径（去掉末尾分隔符）
@@ -959,14 +959,12 @@ classdef DataReaderFactory
                 end
                 dirNorm = strtrim(dirPath);
                 if startsWith(dirNorm, rootNorm, 'IgnoreCase', ispc)
-                    % 提取 rootDir 的目录名
-                    [~, rootName] = fileparts(rootNorm);
                     relPath = dirPath(length(rootNorm)+1:end);
                     relPath = strrep(relPath, filesep, '_');
                     relPath = strrep(relPath, '/', '_');
                     relPath = regexprep(relPath, '^_+', '');
                     if ~isempty(relPath)
-                        dirName = [relPath '_' rootName];
+                        dirName = relPath;
                         return;
                     end
                 end

@@ -38,6 +38,7 @@ classdef TimeSeriesPresenter < BasePresenter
             obj.TrackListener(addlistener(view, 'SliceDialogClicked', @obj.OnSliceDialog));
             obj.TrackListener(addlistener(view, 'SliceResetClicked', @obj.OnSliceReset));
             obj.TrackListener(addlistener(view, 'AxesClicked', @obj.OnAxesClicked));
+            obj.TrackListener(addlistener(view, 'SetSampleRateClicked', @obj.OnSetSampleRate));
 
             obj.RefreshChannelTable();
         end
@@ -126,14 +127,15 @@ classdef TimeSeriesPresenter < BasePresenter
         % ---- 通道勾选 ----
 
         function OnChannelCheckChanged(obj, ~, evt)
+            d = evt.Data;
             axIdx = obj.View.GetFocusedAxes();
-            if evt.colIdx == 0
-                ds = obj.Session.GetDataset(evt.datasetIdx);
+            if d.colIdx == 0
+                ds = obj.Session.GetDataset(d.datasetIdx);
                 for c = 1:ds.ColumnCount
-                    obj.SetChannelChecked(axIdx, evt.datasetIdx, c, evt.checked);
+                    obj.SetChannelChecked(axIdx, d.datasetIdx, c, d.checked);
                 end
             else
-                obj.SetChannelChecked(axIdx, evt.datasetIdx, evt.colIdx, evt.checked);
+                obj.SetChannelChecked(axIdx, d.datasetIdx, d.colIdx, d.checked);
             end
             obj.RenderAxes(axIdx);
             obj.RefreshChannelTable();
@@ -210,16 +212,34 @@ classdef TimeSeriesPresenter < BasePresenter
         end
 
         function RefreshChannelTable(obj)
-        % RefreshChannelTable 重建通道表（含聚焦 axes 勾选状态与切片标记）
-            rows = struct('datasetIdx', {}, 'colIdx', {}, 'label', {}, ...
-                'datasetName', {}, 'checked', {});
+        % RefreshChannelTable 重建通道表（工作集父行 + 通道子行层次结构）
+            rows = struct('isParent', {}, 'parentIdx', {}, 'datasetIdx', {}, ...
+                'colIdx', {}, 'label', {}, 'datasetName', {}, 'checked', {});
             n = 0;
             for d = 1:obj.Session.DatasetCount
                 ds = obj.Session.GetDataset(d);
                 dsName = obj.Session.GetDatasetName(d);
+
+                % 父行：工作集
+                n = n + 1;
+                parentRow = n;
+                parentChecked = false;
+                r = struct();
+                r.isParent = true;
+                r.parentIdx = 0;
+                r.datasetIdx = d;
+                r.colIdx = 0;
+                r.label = dsName;
+                r.datasetName = dsName;
+                r.checked = false;
+                rows(n) = r;
+
+                % 子行：通道
                 for c = 1:ds.ColumnCount
                     n = n + 1;
                     r = struct();
+                    r.isParent = false;
+                    r.parentIdx = parentRow;
                     r.datasetIdx = d;
                     r.colIdx = c;
                     r.datasetName = dsName;
@@ -231,7 +251,13 @@ classdef TimeSeriesPresenter < BasePresenter
                     r.label = label;
                     r.checked = isChecked;
                     rows(n) = r;
+                    if isChecked
+                        parentChecked = true;
+                    end
                 end
+
+                % 更新父行勾选状态
+                rows(parentRow).checked = parentChecked;
             end
             obj.View.SetChannelTable(rows);
         end
@@ -274,9 +300,10 @@ classdef TimeSeriesPresenter < BasePresenter
         % ---- 归一化 ----
 
         function OnNormalize(obj, ~, evt)
+            d = evt.Data;
             axIdx = obj.View.GetFocusedAxes();
-            obj.Session.SetAxesNormMode(axIdx, evt.mode);
-            if strcmpi(evt.mode, 'none')
+            obj.Session.SetAxesNormMode(axIdx, d.mode);
+            if strcmpi(d.mode, 'none')
                 obj.Session.SetAxesNormParams(axIdx, struct());
             else
                 obj.Session.SetAxesNormParams(axIdx, obj.ComputeNormParams(axIdx));
@@ -321,9 +348,10 @@ classdef TimeSeriesPresenter < BasePresenter
         % ---- 通道操作（切片/重命名） ----
 
         function OnSliceDialog(obj, ~, evt)
+            d = evt.Data;
             axIdx = obj.View.GetFocusedAxes();
             chans = obj.Session.GetAxesChannels(axIdx);
-            chanIdx = obj.FindChannelIndex(chans, evt.datasetIdx, evt.colIdx);
+            chanIdx = obj.FindChannelIndex(chans, d.datasetIdx, d.colIdx);
             if chanIdx == 0
                 obj.View.ShowError('请先勾选该通道到当前 axes');
                 return;
@@ -333,8 +361,8 @@ classdef TimeSeriesPresenter < BasePresenter
             totalRows = length(chan.Data);
             currentRange = chan.SliceRange;
             currentLen = currentRange(2) - currentRange(1) + 1;
-            ds = obj.Session.GetDataset(evt.datasetIdx);
-            colName = ds.GetColumnName(evt.colIdx);
+            ds = obj.Session.GetDataset(d.datasetIdx);
+            colName = ds.GetColumnName(d.colIdx);
 
             answer = inputdlg({'起点行号:', '长度:'}, ...
                 sprintf('设置切片范围 - %s (共 %d 行)', colName, totalRows), ...
@@ -359,9 +387,10 @@ classdef TimeSeriesPresenter < BasePresenter
         end
 
         function OnSliceReset(obj, ~, evt)
+            d = evt.Data;
             axIdx = obj.View.GetFocusedAxes();
             chans = obj.Session.GetAxesChannels(axIdx);
-            chanIdx = obj.FindChannelIndex(chans, evt.datasetIdx, evt.colIdx);
+            chanIdx = obj.FindChannelIndex(chans, d.datasetIdx, d.colIdx);
             if chanIdx == 0, return; end
 
             obj.Session.SetChannelSlice(axIdx, chanIdx, 1, length(chans{chanIdx}.Data));
@@ -381,8 +410,9 @@ classdef TimeSeriesPresenter < BasePresenter
         end
 
         function OnRenameChannel(obj, ~, evt)
-            ds = obj.Session.GetDataset(evt.datasetIdx);
-            currentName = ds.GetColumnName(evt.colIdx);
+            d = evt.Data;
+            ds = obj.Session.GetDataset(d.datasetIdx);
+            currentName = ds.GetColumnName(d.colIdx);
             answer = inputdlg('新列名:', '重命名通道', 1, {currentName});
             if isempty(answer), return; end
 
@@ -392,11 +422,11 @@ classdef TimeSeriesPresenter < BasePresenter
             end
 
             newNames = ds.ColumnNames;
-            newNames{evt.colIdx} = newName;
+            newNames{d.colIdx} = newName;
             newDs = ds.RebuildWithColumnNames(newNames);
-            obj.Session.UpdateDataset(evt.datasetIdx, newDs);
+            obj.Session.UpdateDataset(d.datasetIdx, newDs);
 
-            matPath = obj.Session.GetDatasetMatPath(evt.datasetIdx);
+            matPath = obj.Session.GetDatasetMatPath(d.datasetIdx);
             if ~isempty(matPath)
                 sa_column_names = newNames; %#ok<NASGU>
                 save(matPath, 'sa_column_names', '-append');
@@ -438,6 +468,41 @@ classdef TimeSeriesPresenter < BasePresenter
                 end
             end
             sampleRate = newRate;
+        end
+
+        function OnSetSampleRate(obj, ~, evt)
+        % OnSetSampleRate 右键设置采样频率（单数据集）
+            d = evt.Data;
+            ds = obj.Session.GetDataset(d.datasetIdx);
+            currentRate = ds.SampleRate;
+            dsName = obj.Session.GetDatasetName(d.datasetIdx);
+            default = '';
+            if ~isempty(currentRate), default = num2str(currentRate); end
+            answer = inputdlg(sprintf('数据集: %s\n采样率 (Hz):', dsName), ...
+                '设置采样率', 1, {default});
+            if isempty(answer), return; end
+            newRate = str2double(answer{1});
+            if isnan(newRate) || newRate <= 0
+                obj.View.ShowError('采样率必须为正数');
+                return;
+            end
+            obj.Session.UpdateSampleRate(d.datasetIdx, newRate);
+            matPath = obj.Session.GetDatasetPath(d.datasetIdx);
+            if ~isempty(matPath) && exist(matPath, 'file')
+                DataReaderFactory.UpdateSampleRateInMat(matPath, newRate);
+                jsonPath = strrep(matPath, '_standardized.mat', '_standardized_meta.json');
+                if exist(jsonPath, 'file')
+                    try
+                        meta = jsondecode(fileread(jsonPath));
+                        meta.sample_rate = newRate;
+                        DataReaderFactory.WriteJson(jsonPath, meta);
+                    catch
+                    end
+                end
+            end
+            obj.RefreshChannelTable();
+            obj.RenderAxes(obj.View.GetFocusedAxes());
+            obj.StatusCallback(sprintf('  %s 采样率 = %g Hz', dsName, newRate));
         end
 
         % ---- FFT/PSD 弹窗 ----
@@ -796,7 +861,8 @@ classdef TimeSeriesPresenter < BasePresenter
 
         function OnExportDatasetExcel(obj, ~, evt)
         % OnExportDatasetExcel 手动导出数据集为 Excel（_review.xlsx）
-            matPath = obj.Session.GetDatasetMatPath(evt.datasetIdx);
+            d = evt.Data;
+            matPath = obj.Session.GetDatasetMatPath(d.datasetIdx);
             if isempty(matPath) || ~exist(matPath, 'file')
                 obj.View.ShowError('数据集无对应 .mat 文件，无法导出');
                 return;
@@ -818,12 +884,14 @@ classdef TimeSeriesPresenter < BasePresenter
 
         function OnAxesClicked(obj, ~, evt)
         % OnAxesClicked 点击 axes：更新状态栏坐标
-            if evt.axesIdx > 0
+            d = evt.Data;
+            if d.axesIdx > 0
                 obj.StatusCallback(sprintf('  Axes %d  |  X = %.6g  |  Y = %.6g', ...
-                    evt.axesIdx, evt.x, evt.y));
+                    d.axesIdx, d.x, d.y));
             else
                 obj.StatusCallback(' ');
             end
+            obj.RefreshChannelTable();
         end
     end
 end
