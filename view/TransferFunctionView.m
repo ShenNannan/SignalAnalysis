@@ -21,6 +21,7 @@ classdef TransferFunctionView < handle
     events
         BrowseClicked           % 浏览按钮
         ImportButtonClicked     % 导入按钮（路径经 GetPath 读取）
+        ClearAllClicked         % 清空全部
         CurveSelectionChanged   % 载荷 struct('row', 行号)
     end
 
@@ -144,9 +145,9 @@ classdef TransferFunctionView < handle
                 'VariableNames', {'选择', '曲线'});
             obj.CurveTable.CellEditCallback = @(s, e) obj.OnCurveEdit(e);
 
-            % Browse / Import 按钮
-            btns = uigridlayout(left, [1 2], ...
-                'ColumnWidth', {'1x', '1x'}, ...
+            % Browse / Import / Clear All 按钮
+            btns = uigridlayout(left, [1 3], ...
+                'ColumnWidth', {'1x', '1x', '1x'}, ...
                 'ColumnSpacing', 4, ...
                 'Padding', [0 0 0 0]);
             btns.Layout.Row = 2;
@@ -154,6 +155,8 @@ classdef TransferFunctionView < handle
                 'ButtonPushedFcn', @(s, e) notify(obj, 'BrowseClicked'));
             uibutton(btns, 'push', 'Text', 'Import', ...
                 'ButtonPushedFcn', @(s, e) notify(obj, 'ImportButtonClicked'));
+            uibutton(btns, 'push', 'Text', 'Clear All', ...
+                'ButtonPushedFcn', @(s, e) notify(obj, 'ClearAllClicked'));
         end
 
         function BuildRightPanel(obj)
@@ -214,7 +217,7 @@ classdef TransferFunctionView < handle
             end
             lines = findobj(ax, 'Type', 'line');
             if numel(lines) >= 2
-                legend(ax, 'Interpreter', 'none');
+                legend(ax, 'Interpreter', 'none', 'Location', 'northwest');
             end
         end
     end

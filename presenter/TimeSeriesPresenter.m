@@ -39,6 +39,8 @@ classdef TimeSeriesPresenter < BasePresenter
             obj.TrackListener(addlistener(view, 'SliceResetClicked', @obj.OnSliceReset));
             obj.TrackListener(addlistener(view, 'AxesClicked', @obj.OnAxesClicked));
             obj.TrackListener(addlistener(view, 'SetSampleRateClicked', @obj.OnSetSampleRate));
+            obj.TrackListener(addlistener(view, 'InlineRenameChannel', @obj.OnInlineRenameChannel));
+            obj.TrackListener(addlistener(view, 'InlineRenameDataset', @obj.OnInlineRenameDataset));
 
             obj.RefreshChannelTable();
         end
@@ -110,7 +112,9 @@ classdef TimeSeriesPresenter < BasePresenter
                     continue;
                 end
                 ds = DataReaderFactory.LoadStandard(results{i}.matPath);
-                obj.Session.AddDataset(ds, results{i}.name, results{i}.matPath);
+                % 优先使用 .mat 中保存的自定义数据集名
+                dsName = obj.LoadDatasetName(results{i}.matPath, results{i}.name);
+                obj.Session.AddDataset(ds, dsName, results{i}.matPath);
                 added = added + 1;
             end
             obj.RefreshChannelTable();
@@ -437,6 +441,63 @@ classdef TimeSeriesPresenter < BasePresenter
             obj.RenderAxes(obj.View.GetFocusedAxes());
         end
 
+        function OnInlineRenameChannel(obj, ~, evt)
+        % OnInlineRenameChannel 表格内联重命名通道（无弹窗）
+            d = evt.Data;
+            ds = obj.Session.GetDataset(d.datasetIdx);
+            currentName = ds.GetColumnName(d.colIdx);
+            newName = strtrim(d.newName);
+            if isempty(newName) || strcmp(newName, currentName)
+                return;
+            end
+            newNames = ds.ColumnNames;
+            newNames{d.colIdx} = newName;
+            newDs = ds.RebuildWithColumnNames(newNames);
+            obj.Session.UpdateDataset(d.datasetIdx, newDs);
+
+            matPath = obj.Session.GetDatasetMatPath(d.datasetIdx);
+            if ~isempty(matPath)
+                sa_column_names = newNames; %#ok<NASGU>
+                save(matPath, 'sa_column_names', '-append');
+                DataReaderFactory.UpdateColumnNamesInMeta(matPath, newNames);
+            end
+
+            obj.RefreshChannelTable();
+            obj.RenderAxes(obj.View.GetFocusedAxes());
+        end
+
+        function OnInlineRenameDataset(obj, ~, evt)
+        % OnInlineRenameDataset 表格内联重命名数据集（无弹窗）
+            d = evt.Data;
+            currentName = obj.Session.GetDatasetName(d.datasetIdx);
+            newName = strtrim(d.newName);
+            if isempty(newName) || strcmp(newName, currentName)
+                return;
+            end
+            obj.Session.SetDatasetName(d.datasetIdx, newName);
+
+            matPath = obj.Session.GetDatasetMatPath(d.datasetIdx);
+            if ~isempty(matPath)
+                sa_dataset_name = newName; %#ok<NASGU>
+                save(matPath, 'sa_dataset_name', '-append');
+            end
+
+            obj.RefreshChannelTable();
+            obj.RenderAxes(obj.View.GetFocusedAxes());
+        end
+
+        function name = LoadDatasetName(~, matPath, fallback)
+        % LoadDatasetName 从 .mat 读取 sa_dataset_name，无则返回 fallback
+            name = fallback;
+            try
+                S = load(matPath, 'sa_dataset_name');
+                if isfield(S, 'sa_dataset_name') && ~isempty(S.sa_dataset_name)
+                    name = regexprep(strtrim(S.sa_dataset_name), '^[▼▶]\s*', '');
+                end
+            catch
+            end
+        end
+
         function sampleRate = EnsureSampleRate(obj, datasetIdx)
         % EnsureSampleRate 采样率为空时弹窗设置并回写磁盘；取消返回 []
             ds = obj.Session.GetDataset(datasetIdx);
@@ -588,8 +649,8 @@ classdef TimeSeriesPresenter < BasePresenter
                 title(ax2, 'Cumulative RMS (from PSD)');
             end
             if nPlotted > 1
-                legend(ax1);
-                legend(ax2);
+                legend(ax1, 'Interpreter', 'none', 'Location', 'northwest');
+                legend(ax2, 'Interpreter', 'none', 'Location', 'northwest');
             end
         end
 
@@ -868,7 +929,9 @@ classdef TimeSeriesPresenter < BasePresenter
                 return;
             end
 
-            xlsxPath = strrep(matPath, '_standardized.mat', '_review.xlsx');
+            dsName = obj.Session.GetDatasetName(d.datasetIdx);
+            [dirPart, ~, ~] = fileparts(matPath);
+            xlsxPath = fullfile(dirPart, [dsName '_review.xlsx']);
             obj.View.ShowLoading('导出 Excel...');
             try
                 DataReaderFactory.ExportToExcel(matPath, xlsxPath);
@@ -893,5 +956,6 @@ classdef TimeSeriesPresenter < BasePresenter
             end
             obj.RefreshChannelTable();
         end
+
     end
 end

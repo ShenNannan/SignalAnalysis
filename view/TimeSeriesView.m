@@ -21,6 +21,11 @@ classdef TimeSeriesView < handle
         ChannelRows_    % struct array：isParent/parentIdx/datasetIdx/colIdx/label/datasetName/checked
         ExpandedSets_   % containers.Map: datasetIdx → logical（展开状态）
         VisibleRowMap_  % 可见行号 → ChannelRows_ 索引映射
+        Highlighting_   % logical 标志：防止程序设置 Selection 时触发 OnChannelSelect
+        Rebuilding_     % logical 标志：防止 SetChannelTable 重建时触发 OnChannelSelect
+        Renaming_       % logical 标志：重命名期间禁用展开/折叠
+        RenameOriginal_ % char 重命名前的原始名称（用于判断是否变化）
+        LastClickedRow_ % double 最近左键点击的行号（供右键菜单使用）
     end
 
     events
@@ -41,6 +46,9 @@ classdef TimeSeriesView < handle
         CalcClicked
         AxesClicked             % 载荷 struct('axesIdx',..,'x',..,'y',..)
         RenameChannelClicked    % 载荷 struct('datasetIdx',..,'colIdx',..)
+        InlineRenameChannel     % 载荷 struct('datasetIdx',..,'colIdx',..,'newName',..)
+        InlineRenameDataset     % 载荷 struct('datasetIdx',..,'newName',..)
+
         SliceDialogClicked      % 载荷 struct('datasetIdx',..,'colIdx',..)
         SliceResetClicked       % 载荷 struct('datasetIdx',..,'colIdx',..)
     end
@@ -59,6 +67,11 @@ classdef TimeSeriesView < handle
             obj.ChannelRows_ = struct([]);
             obj.ExpandedSets_ = containers.Map('KeyType', 'double', 'ValueType', 'logical');
             obj.VisibleRowMap_ = [];
+            obj.Highlighting_ = false;
+            obj.Rebuilding_ = false;
+            obj.Renaming_ = false;
+            obj.RenameOriginal_ = '';
+            obj.LastClickedRow_ = 0;
             obj.LoadingDlg_ = [];
 
             obj.BuildChannelPanel();
@@ -112,6 +125,7 @@ classdef TimeSeriesView < handle
             end
             obj.VisibleRowMap_ = visMap;
 
+            obj.Rebuilding_ = true;
             if isempty(checked)
                 obj.ChannelTable.Data = table(logical([]), cell(0,1), ...
                     'VariableNames', {'选择', '数据集'});
@@ -119,6 +133,7 @@ classdef TimeSeriesView < handle
                 obj.ChannelTable.Data = table([checked{:}]', names(:), ...
                     'VariableNames', {'选择', '数据集'});
             end
+            obj.Rebuilding_ = false;
         end
 
         function rows = GetChannelRows(obj)
@@ -244,17 +259,18 @@ classdef TimeSeriesView < handle
             obj.ChannelTable.CellSelectionCallback = @(s, e) obj.OnChannelSelect(e);
 
             cm = uicontextmenu(ancestor(left, 'figure'));
+            uimenu(cm, 'Text', '重命名', ...
+                'MenuSelectedFcn', @(s, e) obj.OnContextRename());
             uimenu(cm, 'Text', '设置采样频率...', ...
                 'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('setSampleRate'));
             uimenu(cm, 'Text', '导出 Excel', ...
                 'MenuSelectedFcn', @(s, e) obj.OnContextAction('exportExcel'));
-            uimenu(cm, 'Text', '重命名通道...', 'Separator', 'on', ...
-                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('rename'));
-            uimenu(cm, 'Text', '设置切片范围...', ...
+            uimenu(cm, 'Text', '设置切片范围...', 'Separator', 'on', ...
                 'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('slice'));
             uimenu(cm, 'Text', '切片重置', ...
                 'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('sliceReset'));
             obj.ChannelTable.ContextMenu = cm;
+            cm.ContextMenuOpeningFcn = @(s, e) obj.OnContextMenuOpening();
 
             btns = uigridlayout(left, [1 3], ...
                 'ColumnWidth', {'1x', '1x', '1x'}, ...
@@ -444,15 +460,44 @@ classdef TimeSeriesView < handle
         % ---- 通道表回调 ----
 
         function OnChannelEdit(obj, e)
-        % OnChannelEdit 复选框勾选（只负责通道勾选，不触发展开/折叠）
+        % OnChannelEdit 单元格编辑：列1=复选框，列2=通道名（仅子行）
+            if obj.Rebuilding_, return; end
             visRow = e.Indices(1);
+            col = e.Indices(2);
             if visRow < 1 || visRow > numel(obj.VisibleRowMap_)
                 return;
             end
             internalIdx = obj.VisibleRowMap_(visRow);
             r = obj.ChannelRows_(internalIdx);
-            val = logical(obj.ChannelTable.Data{visRow, 1});
 
+            if col == 2
+                % 列2编辑仅在重命名模式下有效
+                if ~obj.Renaming_
+                    return;
+                end
+                obj.Renaming_ = false;
+                obj.ChannelTable.ColumnEditable(2) = false;
+                newName = strtrim(obj.ChannelTable.Data{visRow, 2});
+                newName = regexprep(newName, '^[▼▶]\s*', '');
+                % 名称无变化或为空 → 视为取消，恢复原名
+                if isempty(newName) || strcmp(newName, obj.RenameOriginal_)
+                    obj.Rebuilding_ = true;
+                    obj.ChannelTable.Data{visRow, 2} = r.label;
+                    obj.Rebuilding_ = false;
+                    return;
+                end
+                if r.isParent
+                    notify(obj, 'InlineRenameDataset', AppEventData(struct(...
+                        'datasetIdx', r.datasetIdx, 'newName', newName)));
+                else
+                    notify(obj, 'InlineRenameChannel', AppEventData(struct(...
+                        'datasetIdx', r.datasetIdx, 'colIdx', r.colIdx, 'newName', newName)));
+                end
+                return;
+            end
+
+            % 列1：复选框勾选
+            val = logical(obj.ChannelTable.Data{visRow, 1});
             if r.isParent
                 dsIdx = r.datasetIdx;
                 obj.ChannelRows_(internalIdx).checked = val;
@@ -472,10 +517,20 @@ classdef TimeSeriesView < handle
 
         function OnChannelSelect(obj, e)
         % OnChannelSelect 点击行展开/折叠（只负责数据集展开，不改变勾选状态）
+            if obj.Highlighting_ || obj.Rebuilding_
+                return;
+            end
+            % 重命名期间点击其他行 → 取消重命名
+            if obj.Renaming_
+                obj.Renaming_ = false;
+                obj.ChannelTable.ColumnEditable(2) = false;
+                return;
+            end
             if isempty(e.Indices)
                 return;
             end
             visRow = e.Indices(1);
+            obj.LastClickedRow_ = visRow;
             if visRow < 1 || visRow > numel(obj.VisibleRowMap_)
                 return;
             end
@@ -491,6 +546,40 @@ classdef TimeSeriesView < handle
                 obj.ExpandedSets_(dsIdx) = true;
             end
             obj.SetChannelTable(obj.ChannelRows_);
+            % 重建后重选该行：保持高亮供右键使用，且下次点击同一行选择变化可再次触发回调
+            obj.Highlighting_ = true;
+            obj.ChannelTable.Selection = [visRow, 1; visRow, 2];
+            obj.Highlighting_ = false;
+        end
+
+        function OnContextMenuOpening(obj)
+        % OnContextMenuOpening 右键时自动选中最近左键点击的行
+            if obj.LastClickedRow_ >= 1 && obj.LastClickedRow_ <= size(obj.ChannelTable.Data, 1)
+                obj.Highlighting_ = true;
+                obj.ChannelTable.Selection = [obj.LastClickedRow_, 1; obj.LastClickedRow_, 2];
+                obj.Highlighting_ = false;
+            end
+        end
+
+        function OnContextRename(obj)
+        % OnContextRename 右键重命名：临时开启列编辑，禁用展开/折叠
+            sel = obj.ChannelTable.Selection;
+            if isempty(sel) || isempty(obj.VisibleRowMap_)
+                return;
+            end
+            visRow = sel(1, 1);
+            if visRow < 1 || visRow > numel(obj.VisibleRowMap_)
+                return;
+            end
+            internalIdx = obj.VisibleRowMap_(visRow);
+            r = obj.ChannelRows_(internalIdx);
+            obj.RenameOriginal_ = r.label;
+            obj.Renaming_ = true;
+            obj.ChannelTable.ColumnEditable(2) = true;
+            obj.ChannelTable.Selection = [visRow, 2];
+            % 需要两次设置才能进入编辑模式：先选中再更新
+            drawnow;
+            obj.ChannelTable.Selection = [visRow, 2];
         end
 
         function OnContextAction(obj, action)
@@ -524,8 +613,6 @@ classdef TimeSeriesView < handle
             end
             payload = AppEventData(struct('datasetIdx', r.datasetIdx, 'colIdx', r.colIdx));
             switch action
-                case 'rename'
-                    notify(obj, 'RenameChannelClicked', payload);
                 case 'slice'
                     notify(obj, 'SliceDialogClicked', payload);
                 case 'sliceReset'
@@ -585,7 +672,7 @@ classdef TimeSeriesView < handle
             end
             lines = findobj(ax, 'Type', 'line');
             if numel(lines) >= 2
-                legend(ax, 'Interpreter', 'none');
+                legend(ax, 'Interpreter', 'none', 'Location', 'northwest');
             end
         end
     end

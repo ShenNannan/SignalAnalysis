@@ -49,9 +49,9 @@
 | 14 | 点击数据集复选框 | CellEdit | `OnChannelEdit`（isParent） | `ChannelCheckChanged` | `{datasetIdx, colIdx:0, checked}` | 一键全选/取消该数据集所有通道 |
 | 15 | 点击通道复选框 | CellEdit | `OnChannelEdit`（子行） | `ChannelCheckChanged` | `{datasetIdx, colIdx, checked}` | 单通道勾选/取消 |
 | 16 | 点击行（展开/折叠） | CellSelect | `OnChannelSelect` | 无（直接操作） | — | 无（View 内部切换 ExpandedSets_） |
-| 17 | 右键→导出 Excel | 右键菜单 | `OnContextAction('exportExcel')` | `ExportExcelClicked` | `{datasetIdx}` | `OnExportDatasetExcel` → 导出 _review.xlsx |
-| 18 | 右键→设置采样频率 | 右键菜单 | `OnContextChannelAction('setSampleRate')` | `SetSampleRateClicked` | `{datasetIdx, colIdx}` | `OnSetSampleRate` → inputdlg → 回写 .mat/.json |
-| 19 | 右键→重命名通道 | 右键菜单 | `OnContextChannelAction('rename')` | `RenameChannelClicked` | `{datasetIdx, colIdx}` | `OnRenameChannel` → inputdlg → 回写 .mat/.json |
+| 17 | 右键→重命名 | 右键菜单 | `OnContextRename` | `InlineRenameChannel` / `InlineRenameDataset` | `{datasetIdx, colIdx, newName}` / `{datasetIdx, newName}` | 内联重命名（无弹窗），回写 .mat/.json |
+| 18 | 右键→导出 Excel | 右键菜单 | `OnContextAction('exportExcel')` | `ExportExcelClicked` | `{datasetIdx}` | `OnExportDatasetExcel` → 导出 _review.xlsx（文件名使用数据集名） |
+| 19 | 右键→设置采样频率 | 右键菜单 | `OnContextChannelAction('setSampleRate')` | `SetSampleRateClicked` | `{datasetIdx, colIdx}` | `OnSetSampleRate` → inputdlg → 回写 .mat/.json |
 | 20 | 右键→设置切片范围 | 右键菜单 | `OnContextChannelAction('slice')` | `SliceDialogClicked` | `{datasetIdx, colIdx}` | `OnSliceDialog` → inputdlg → 设置 slice |
 | 21 | 右键→切片重置 | 右键菜单 | `OnContextChannelAction('sliceReset')` | `SliceResetClicked` | `{datasetIdx, colIdx}` | `OnSliceReset` → 恢复全量数据 |
 
@@ -72,6 +72,7 @@
 | 24 | Browse 按钮 | 按钮点击 | `BrowseClicked` | 无 | `OnBrowse` → 文件夹选择 → 写回路径 |
 | 25 | Import 按钮 | 按钮点击 | `ImportButtonClicked` | 无 | `OnImport` → 导入 → 提取 FRF 曲线 → 渲染 |
 | 26 | 曲线表复选框 | CellEdit | `CurveSelectionChanged` | `{row}`（未被使用） | `OnCurveSelection` → `ApplySelection` → 按勾选状态重绘 |
+| 27 | Clear All 按钮 | 按钮点击 | `ClearAllClicked` | 无 | `OnClearAll` → 清空曲线 + 重置路径 + 清空图表 |
 
 ---
 
@@ -115,12 +116,17 @@
 ## 十、右键菜单路由逻辑
 
 ```
+OnContextMenuOpening()           ← 右键时自动选中最近左键点击的行
+
+OnContextRename()                ← 重命名（数据集行和通道行均可用）
+  ├─ 设置 Renaming_=true, ColumnEditable(2)=true
+  └─ 用户编辑后 OnChannelEdit(col==2) 确认/取消
+
 OnContextAction(action)          ← 数据集级操作（父行）
   └─ 'exportExcel'               导出 Excel
 
 OnContextChannelAction(action)   ← 通道级操作（子行）
   ├─ 'setSampleRate'             设置采样频率
-  ├─ 'rename'                    重命名通道
   ├─ 'slice'                     设置切片范围
   └─ 'sliceReset'                切片重置
 ```
@@ -128,3 +134,5 @@ OnContextChannelAction(action)   ← 通道级操作（子行）
 隐含守卫：`OnContextAction` 跳过子行（`~r.isParent`），`OnContextChannelAction` 跳过父行（`r.isParent`）。
 
 数据集全选/取消：通过点击数据集行复选框实现（`OnChannelEdit` isParent 分支）。
+
+重命名模式：右键→重命名后，`Renaming_=true` 禁用展开/折叠，列2临时可编辑。确认（回车/Tab/点击其他地方）或取消（Escape/名称未变/点击其他行）后恢复。

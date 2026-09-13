@@ -18,6 +18,7 @@ classdef TransferFunctionPresenter < BasePresenter
             obj.TrackListener(addlistener(view, 'BrowseClicked', @obj.OnBrowse));
             obj.TrackListener(addlistener(view, 'ImportButtonClicked', @obj.OnImport));
             obj.TrackListener(addlistener(view, 'CurveSelectionChanged', @obj.OnCurveSelection));
+            obj.TrackListener(addlistener(view, 'ClearAllClicked', @obj.OnClearAll));
         end
 
         function OnBrowse(obj, ~, ~)
@@ -76,6 +77,13 @@ classdef TransferFunctionPresenter < BasePresenter
 
         function OnCurveSelection(obj, ~, ~)
             obj.ApplySelection();
+        end
+
+        function OnClearAll(obj, ~, ~)
+            obj.Curves_ = struct([]);
+            obj.View.SetCurveList({}, []);
+            obj.View.ClearPlots();
+            obj.View.SetPath('');
         end
     end
 

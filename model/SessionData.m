@@ -113,6 +113,25 @@ classdef SessionData < handle
             notify(obj, 'DatasetsUpdated');
         end
 
+        function SetDatasetName(obj, idx, newName)
+        % SetDatasetName 重命名数据集，同步更新 axes 中的通道标签
+            if idx < 1 || idx > obj.DatasetCount
+                return;
+            end
+            obj.DatasetNames_{idx} = newName;
+            ds = obj.Datasets_{idx};
+            for a = 1:length(obj.AxesData_)
+                if isempty(obj.AxesData_{a}), continue; end
+                for c = 1:length(obj.AxesData_{a}.Channels)
+                    ch = obj.AxesData_{a}.Channels{c};
+                    if ch.DatasetIdx == idx && ch.ColIdx <= ds.ColumnCount
+                        obj.AxesData_{a}.Channels{c}.Label = [newName ' / ' ds.GetDisplayLabel(ch.ColIdx)];
+                    end
+                end
+            end
+            notify(obj, 'DatasetsUpdated');
+        end
+
         function tf = HasDataset(obj)
         % HasDataset 是否有数据集
             tf = ~isempty(obj.Datasets_);
