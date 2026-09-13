@@ -37,6 +37,9 @@ classdef TimeSeriesView < handle
         NormClicked             % 载荷 struct('mode',..)
         CalcClicked
         AxesClicked             % 载荷 struct('axesIdx',..,'x',..,'y',..)
+        RenameChannelClicked    % 载荷 struct('datasetIdx',..,'colIdx',..)
+        SliceDialogClicked      % 载荷 struct('datasetIdx',..,'colIdx',..)
+        SliceResetClicked       % 载荷 struct('datasetIdx',..,'colIdx',..)
     end
 
     methods
@@ -168,6 +171,10 @@ classdef TimeSeriesView < handle
         function ShowError(obj, msg)
             uialert(ancestor(obj.Grid_, 'figure'), msg, '错误', 'Icon', 'error');
         end
+
+        function ShowInfo(obj, msg)
+            uialert(ancestor(obj.Grid_, 'figure'), msg, '提示', 'Icon', 'success');
+        end
     end
 
     methods (Access = private)
@@ -194,6 +201,12 @@ classdef TimeSeriesView < handle
                 'MenuSelectedFcn', @(s, e) obj.OnContextAction('uncheckAll'));
             uimenu(cm, 'Text', '导出 Excel(本数据集)', ...
                 'MenuSelectedFcn', @(s, e) obj.OnContextAction('exportExcel'));
+            uimenu(cm, 'Text', '重命名通道...', 'Separator', 'on', ...
+                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('rename'));
+            uimenu(cm, 'Text', '设置切片范围...', ...
+                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('slice'));
+            uimenu(cm, 'Text', '切片重置', ...
+                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('sliceReset'));
             obj.ChannelTable.ContextMenu = cm;
 
             btns = uigridlayout(left, [1 3], ...
@@ -385,12 +398,8 @@ classdef TimeSeriesView < handle
 
         function OnContextAction(obj, action)
             % 右键会先选中该行（SelectionType='row'），从 Selection 取行号
-            sel = obj.ChannelTable.Selection;
-            if isempty(sel)
-                return;
-            end
-            row = sel(1);
-            if isempty(obj.ChannelRows_) || row > numel(obj.ChannelRows_)
+            row = obj.GetContextRow();
+            if isempty(row)
                 return;
             end
             d = obj.ChannelRows_(row).datasetIdx;
@@ -406,6 +415,36 @@ classdef TimeSeriesView < handle
                     end
                     notify(obj, 'ChannelCheckChanged', ...
                         struct('datasetIdx', d, 'colIdx', 0, 'checked', newVal));
+            end
+        end
+
+        function OnContextChannelAction(obj, action)
+            row = obj.GetContextRow();
+            if isempty(row)
+                return;
+            end
+            r = obj.ChannelRows_(row);
+            payload = struct('datasetIdx', r.datasetIdx, 'colIdx', r.colIdx);
+            switch action
+                case 'rename'
+                    notify(obj, 'RenameChannelClicked', payload);
+                case 'slice'
+                    notify(obj, 'SliceDialogClicked', payload);
+                case 'sliceReset'
+                    notify(obj, 'SliceResetClicked', payload);
+            end
+        end
+
+        function row = GetContextRow(obj)
+        % GetContextRow 右键命中的表格行号（右键先选中该行）
+            row = [];
+            sel = obj.ChannelTable.Selection;
+            if isempty(sel)
+                return;
+            end
+            row = sel(1);
+            if isempty(obj.ChannelRows_) || row > numel(obj.ChannelRows_)
+                row = [];
             end
         end
 

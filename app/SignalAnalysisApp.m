@@ -51,7 +51,7 @@ classdef SignalAnalysisApp < handle
             obj.TimeSeriesView_ = TimeSeriesView(tabTS);
             obj.TransferFunctionView_ = TransferFunctionView(tabTF);
 
-            obj.TimeSeriesPresenter_ = [];
+            obj.TimeSeriesPresenter_ = TimeSeriesPresenter(obj.TimeSeriesView_, @obj.SetStatusText);
             obj.TransferFunctionPresenter_ = TransferFunctionPresenter(obj.TransferFunctionView_);
         end
 

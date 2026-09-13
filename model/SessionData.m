@@ -13,7 +13,6 @@ classdef SessionData < handle
         FocusedAxes_    double    % 当前聚焦的 axes 索引
         MaxAxes_        double    % axes 数量上限
         LastPaths_      cell      % 最近使用的路径
-        AxesAnalysisType_   cell  % 每个 axes 的分析类型 {'time','fft',...}
         AxesNormParams_     cell  % 每个 axes 的归一化参数 struct
     end
 
@@ -43,7 +42,6 @@ classdef SessionData < handle
             obj.AxesNormMode_ = {};
             obj.FocusedAxes_ = 1;
             obj.LastPaths_ = cell(1, 4);
-            obj.AxesAnalysisType_ = {};
             obj.AxesNormParams_ = {};
         end
 
@@ -90,7 +88,6 @@ classdef SessionData < handle
             obj.DatasetPaths_ = {};
             obj.AxesData_ = {};
             obj.AxesNormMode_ = {};
-            obj.AxesAnalysisType_ = {};
             obj.AxesNormParams_ = {};
             notify(obj, 'DatasetsUpdated');
         end
@@ -350,25 +347,6 @@ classdef SessionData < handle
                 mode = obj.AxesNormMode_{axesIdx};
             else
                 mode = 'none';
-            end
-        end
-
-        % ---- 分析类型 ----
-
-        function SetAxesAnalysisType(obj, axesIdx, analysisType)
-        % SetAxesAnalysisType 设置 axes 的分析类型
-            while length(obj.AxesAnalysisType_) < axesIdx
-                obj.AxesAnalysisType_{end+1} = 'time'; %#ok<AGROW>
-            end
-            obj.AxesAnalysisType_{axesIdx} = analysisType;
-        end
-
-        function type = GetAxesAnalysisType(obj, axesIdx)
-        % GetAxesAnalysisType 获取 axes 的分析类型
-            if axesIdx >= 1 && axesIdx <= length(obj.AxesAnalysisType_)
-                type = obj.AxesAnalysisType_{axesIdx};
-            else
-                type = 'time';
             end
         end
 

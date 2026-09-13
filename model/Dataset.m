@@ -2,7 +2,7 @@ classdef Dataset < handle
 % Dataset - 统一数据容器
 %
 % 所有 DataReaderFactory.LoadStandard 输出此类型。
-% 下游代码（SignalProcessor, PlotController）只通过此接口访问数据。
+% 下游代码（Presenter, SignalProcessor）只通过此接口访问数据。
 %
 % 设计原则：
 %   - L0（矩阵）必需
