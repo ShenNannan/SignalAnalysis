@@ -1,0 +1,20 @@
+{
+  "keywords": [
+    "CTRL",
+    "SENSOR",
+    "POS",
+    "SN",
+    "AS",
+    "MS",
+    "CTRLVAR"
+  ],
+  "separators": [
+    "=>",
+    "_+_"
+  ],
+  "vendorPrefixes": [
+    "VM4A_",
+    "DSA_",
+    "FRF_"
+  ]
+}

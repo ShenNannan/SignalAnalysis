@@ -172,7 +172,7 @@ classdef TransferFunctionAnalyzer < handle
 
             startPath = pwd;
             [fileName, filePath] = FileExplorer.SelectFile(startPath, ...
-                'Data Files (*.dat;*.csv;*.txt;*.xlsx;*.mat;*.frfx)|*.dat;*.csv;*.txt;*.xlsx;*.mat;*.frfx');
+                {'*.dat;*.csv;*.txt;*.xlsx;*.mat;*.frfx', 'Data Files (*.dat;*.csv;*.txt;*.xlsx;*.mat;*.frfx)'});
 
             if ~isempty(filePath)
                 set(obj.PathEdit, 'String', filePath);
@@ -196,9 +196,13 @@ classdef TransferFunctionAnalyzer < handle
             else
                 outputDir = fileparts(filePath);
                 matPath = DataReaderFactory.ImportToStandard(filePath, outputDir);
-                obj.Session.LoadFile(matPath);
+                ds = DataReaderFactory.LoadStandard(matPath);
+                if obj.Session.HasDataset()
+                    obj.Session.RemoveDataset(1);
+                end
+                [~, fname] = fileparts(filePath);
+                obj.Session.AddDataset(ds, fname, matPath);
 
-                ds = obj.Session.Dataset_;
                 nCols = ds.ColumnCount;
                 names = cell(1, nCols);
                 for i = 1:nCols
@@ -259,8 +263,24 @@ classdef TransferFunctionAnalyzer < handle
                     set(obj.InputChannelPopup, 'String', names);
                     set(obj.OutputChannelPopup, 'String', names);
 
-                    % 存储数据
-                    obj.Session.LoadFile(filePath);
+                    % 合并所有数据集为一个矩阵
+                    data = datasets{1}.data;
+                    if length(datasets) > 1
+                        for k = 2:length(datasets)
+                            minRows = min(size(data,1), size(datasets{k}.data,1));
+                            data = data(1:minRows, :);
+                            extra = datasets{k}.data(1:minRows, :);
+                            if size(extra,1) < size(data,1)
+                                extra(end+1:size(data,1), :) = NaN;
+                            end
+                            data = [data, extra]; %#ok<AGROW>
+                        end
+                    end
+                    ds = Dataset(data, names, [], filePath, 'frfx');
+                    if obj.Session.HasDataset()
+                        obj.Session.RemoveDataset(1);
+                    end
+                    obj.Session.AddDataset(ds, 'frfx_data', filePath);
                 end
             catch e
                 errordlg(e.message, 'Error');
@@ -275,7 +295,7 @@ classdef TransferFunctionAnalyzer < handle
                 return;
             end
 
-            ds = obj.Session.Dataset_;
+            ds = obj.Session.GetDataset(1);
             inputIdx = get(obj.InputChannelPopup, 'Value');
             outputIdx = get(obj.OutputChannelPopup, 'Value');
 

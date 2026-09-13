@@ -12,22 +12,21 @@ classdef SessionData < handle
         AxesNormMode_   cell      % 每个 axes 的归一化模式
         FocusedAxes_    double    % 当前聚焦的 axes 索引
         MaxAxes_        double    % axes 数量上限
-        SelectionRange_ double    % 选区 [startRow, endRow]
         LastPaths_      cell      % 最近使用的路径
+        AxesAnalysisType_   cell  % 每个 axes 的分析类型 {'time','fft',...}
+        AxesNormParams_     cell  % 每个 axes 的归一化参数 struct
     end
 
     properties (Dependent, SetAccess = private)
         DatasetCount    double    % 数据集数量
         AxesCount       double    % 当前 axes 数量（有通道的）
-        SelectionRange  double    % 选区 [startRow, endRow]
+        AxesSlotCount   double    % axes 槽位总数（含空槽）
         FocusedAxes     double    % 当前聚焦的 axes
     end
 
     events
         DatasetsUpdated  % 数据集变更（增删）
         ChannelsUpdated  % axes 通道变更
-        SelectionChanged % 选区变更
-        FocusChanged     % 聚焦 axes 变更
     end
 
     methods
@@ -43,8 +42,9 @@ classdef SessionData < handle
             obj.AxesData_ = {};
             obj.AxesNormMode_ = {};
             obj.FocusedAxes_ = 1;
-            obj.SelectionRange_ = [1, 1];
             obj.LastPaths_ = cell(1, 4);
+            obj.AxesAnalysisType_ = {};
+            obj.AxesNormParams_ = {};
         end
 
         % ---- 数据集管理 ----
@@ -90,7 +90,8 @@ classdef SessionData < handle
             obj.DatasetPaths_ = {};
             obj.AxesData_ = {};
             obj.AxesNormMode_ = {};
-            obj.SelectionRange_ = [1, 1];
+            obj.AxesAnalysisType_ = {};
+            obj.AxesNormParams_ = {};
             notify(obj, 'DatasetsUpdated');
         end
 
@@ -108,7 +109,7 @@ classdef SessionData < handle
                     ch = obj.AxesData_{a}.Channels{c};
                     if ch.DatasetIdx == idx && ch.ColIdx <= newDataset.ColumnCount
                         obj.AxesData_{a}.Channels{c}.Data = newDataset.GetColumn(ch.ColIdx);
-                        obj.AxesData_{a}.Channels{c}.Label = newDataset.ColumnNames{ch.ColIdx};
+                        obj.AxesData_{a}.Channels{c}.Label = [obj.DatasetNames_{idx} ' / ' newDataset.GetDisplayLabel(ch.ColIdx)];
                     end
                 end
             end
@@ -135,6 +136,24 @@ classdef SessionData < handle
                 name = '';
             else
                 name = obj.DatasetNames_{idx};
+            end
+        end
+
+        function path = GetDatasetPath(obj, idx)
+        % GetDatasetPath 获取数据集路径
+            if idx < 1 || idx > length(obj.DatasetPaths_)
+                path = '';
+            else
+                path = obj.DatasetPaths_{idx};
+            end
+        end
+
+        function matPath = GetDatasetMatPath(obj, idx)
+        % GetDatasetMatPath 获取数据集的 .mat 文件路径（复用 DatasetPaths_）
+            if idx >= 1 && idx <= length(obj.DatasetPaths_)
+                matPath = obj.DatasetPaths_{idx};
+            else
+                matPath = '';
             end
         end
 
@@ -176,7 +195,7 @@ classdef SessionData < handle
             chan.DatasetIdx = datasetIdx;
             chan.ColIdx = colIdx;
             chan.Data = ds.GetColumn(colIdx);
-            chan.Label = ds.GetDisplayLabel(colIdx);
+            chan.Label = [obj.DatasetNames_{datasetIdx} ' / ' ds.GetDisplayLabel(colIdx)];
             chan.SliceRange = [1, size(chan.Data, 1)];
             obj.AxesData_{axesIdx}.Channels{end+1} = chan;
 
@@ -245,6 +264,9 @@ classdef SessionData < handle
             if idx >= 1 && idx <= length(obj.AxesNormMode_)
                 obj.AxesNormMode_{idx} = 'none';
             end
+            if idx >= 1 && idx <= length(obj.AxesNormParams_)
+                obj.AxesNormParams_{idx} = struct();
+            end
             notify(obj, 'ChannelsUpdated');
         end
 
@@ -254,16 +276,7 @@ classdef SessionData < handle
         % SetFocusedAxes 设置聚焦的 axes
             if idx >= 1 && idx <= obj.MaxAxes_
                 obj.FocusedAxes_ = idx;
-                notify(obj, 'FocusChanged');
             end
-        end
-
-        % ---- 选区 ----
-
-        function SetSelection(obj, startRow, endRow)
-        % SetSelection 设置选区范围
-            obj.SelectionRange_ = [startRow, endRow];
-            notify(obj, 'SelectionChanged');
         end
 
         % ---- 采样率 ----
@@ -291,7 +304,7 @@ classdef SessionData < handle
         % ---- 通道切片 ----
 
         function SetChannelSlice(obj, axesIdx, chanIdx, startRow, endRow)
-        % SetChannelSlice 设置通道的独立切片范围
+        % SetChannelSlice 设置通道的独立切片范围（支持环形缓冲，endRow 可超过数据长度）
             if axesIdx < 1 || axesIdx > length(obj.AxesData_) || isempty(obj.AxesData_{axesIdx})
                 return;
             end
@@ -299,9 +312,8 @@ classdef SessionData < handle
             if chanIdx < 1 || chanIdx > length(chans)
                 return;
             end
-            totalRows = length(chans{chanIdx}.Data);
             startRow = max(1, round(startRow));
-            endRow = min(totalRows, round(endRow));
+            endRow = round(endRow);
             if startRow >= endRow
                 return;
             end
@@ -341,6 +353,44 @@ classdef SessionData < handle
             end
         end
 
+        % ---- 分析类型 ----
+
+        function SetAxesAnalysisType(obj, axesIdx, analysisType)
+        % SetAxesAnalysisType 设置 axes 的分析类型
+            while length(obj.AxesAnalysisType_) < axesIdx
+                obj.AxesAnalysisType_{end+1} = 'time'; %#ok<AGROW>
+            end
+            obj.AxesAnalysisType_{axesIdx} = analysisType;
+        end
+
+        function type = GetAxesAnalysisType(obj, axesIdx)
+        % GetAxesAnalysisType 获取 axes 的分析类型
+            if axesIdx >= 1 && axesIdx <= length(obj.AxesAnalysisType_)
+                type = obj.AxesAnalysisType_{axesIdx};
+            else
+                type = 'time';
+            end
+        end
+
+        % ---- 归一化参数 ----
+
+        function SetAxesNormParams(obj, axesIdx, params)
+        % SetAxesNormParams 设置 axes 的归一化参数
+            while length(obj.AxesNormParams_) < axesIdx
+                obj.AxesNormParams_{end+1} = struct(); %#ok<AGROW>
+            end
+            obj.AxesNormParams_{axesIdx} = params;
+        end
+
+        function params = GetAxesNormParams(obj, axesIdx)
+        % GetAxesNormParams 获取 axes 的归一化参数
+            if axesIdx >= 1 && axesIdx <= length(obj.AxesNormParams_)
+                params = obj.AxesNormParams_{axesIdx};
+            else
+                params = struct();
+            end
+        end
+
         % ---- 路径记忆 ----
 
         function SetLastPath(obj, slotIndex, path)
@@ -372,8 +422,8 @@ classdef SessionData < handle
             end
         end
 
-        function val = get.SelectionRange(obj)
-            val = obj.SelectionRange_;
+        function val = get.AxesSlotCount(obj)
+            val = length(obj.AxesData_);
         end
 
         function val = get.FocusedAxes(obj)

@@ -9,30 +9,24 @@ classdef TimeSeriesAnalyzer < handle
         MainFigure          % 主图窗 handle
         Session         SessionData
         PlotCtrl        PlotController
-        SelectionMgr    SelectionManager
         AnalysisEngine_ AnalysisEngine
 
         % UI 控件
         ChannelPanel            % uipanel 通道列表容器
         ChannelControls   cell  % 通道控件 struct array: {handle, type, datasetIdx, colIdx}
         DatasetExpanded_  logical  % 每个数据集的展开状态
-        AxesTabBars       cell  % 每个 axes 的标签按钮 handles
-        SelectionPanel          % uipanel handle
-        SelectionStartEdit      % uicontrol handle
-        SelectionEndEdit        % uicontrol handle
-        StatusBar               % uicontrol handle
+        SelectedDatasets_ logical  % 每个数据集的选中状态
 
         % 布局
         LeftPanel               % uipanel handle
         RightPanel              % uipanel handle
         AxesContainer           % uipanel handle
 
-        % 分析类型记录（每个 axes 独立）
-        AxesAnalysisType cell   % {'time','fft','psd',...} per axes
-
         % 归一化控件
         NormModeDropdown        % uicontrol popup 归一化模式选择
         NormButton              % uicontrol pushbutton 归一化按钮
+
+
     end
 
     methods
@@ -40,18 +34,16 @@ classdef TimeSeriesAnalyzer < handle
             obj.Session = SessionData(6);
             obj.ChannelControls = {};
             obj.DatasetExpanded_ = logical([]);
-            obj.AxesTabBars = {};
-            obj.AxesAnalysisType = {};
+            obj.SelectedDatasets_ = logical([]);
 
             obj.BuildUI();
             obj.PlotCtrl = PlotController(obj.MainFigure, 6, obj.AxesContainer);
-            obj.SelectionMgr = SelectionManager(obj.Session, obj.PlotCtrl);
+            obj.PlotCtrl.InitStatusBar();
             obj.AnalysisEngine_ = AnalysisEngine(obj.Session, obj.PlotCtrl);
+            obj.PlotCtrl.SetupDataCursor();
 
             % 注册事件
             addlistener(obj.Session, 'DatasetsUpdated', @obj.OnDatasetsUpdated);
-            addlistener(obj.Session, 'ChannelsUpdated', @obj.OnChannelsUpdated);
-            addlistener(obj.Session, 'SelectionChanged', @obj.OnSelectionChanged);
         end
 
         function BuildUI(obj)
@@ -62,7 +54,7 @@ classdef TimeSeriesAnalyzer < handle
                 'MenuBar', 'none', ...
                 'ToolBar', 'none', ...
                 'Position', [100 100 1200 700], ...
-                'KeyPressFcn', @obj.OnKeyPress, ...
+                'WindowButtonMotionFcn', @obj.OnMouseMotion, ...
                 'CloseRequestFcn', @obj.OnClose);
 
             % 左面板（通道池）
@@ -73,7 +65,8 @@ classdef TimeSeriesAnalyzer < handle
             % 通道列表区域（滚动面板）
             obj.ChannelPanel = uipanel(obj.LeftPanel, ...
                 'Position', [0 0.12 1 0.88], ...
-                'Title', '');
+                'Title', '', ...
+                'ButtonDownFcn', @(src, evt) obj.ClearDatasetSelection());
 
             % 底部按钮（3行布局）
             uicontrol(obj.LeftPanel, 'Style', 'pushbutton', ...
@@ -83,21 +76,15 @@ classdef TimeSeriesAnalyzer < handle
                 'Callback', @obj.OnBrowseFile);
 
             uicontrol(obj.LeftPanel, 'Style', 'pushbutton', ...
-                'String', 'Retry', ...
-                'Units', 'normalized', ...
-                'Position', [0 0.075 1 0.04], ...
-                'Callback', @obj.OnRetry);
-
-            uicontrol(obj.LeftPanel, 'Style', 'pushbutton', ...
                 'String', 'Import', ...
                 'Units', 'normalized', ...
-                'Position', [0 0.005 0.48 0.04], ...
+                'Position', [0 0.075 0.48 0.04], ...
                 'Callback', @obj.OnImportFile);
 
             uicontrol(obj.LeftPanel, 'Style', 'pushbutton', ...
                 'String', 'Clear All', ...
                 'Units', 'normalized', ...
-                'Position', [0.5 0.005 0.48 0.04], ...
+                'Position', [0.5 0.075 0.5 0.04], ...
                 'Callback', @obj.OnClearAll);
 
             % 右面板（绘图区 + 选区 + 状态栏）
@@ -105,7 +92,7 @@ classdef TimeSeriesAnalyzer < handle
                 'Position', [0.2 0 0.8 1], ...
                 'Title', '');
 
-            % 工具栏
+            % 工具栏：图窗操作 | 数据处理
             uicontrol(obj.RightPanel, 'Style', 'pushbutton', ...
                 'String', '+', ...
                 'Units', 'normalized', ...
@@ -135,91 +122,57 @@ classdef TimeSeriesAnalyzer < handle
             uicontrol(obj.RightPanel, 'Style', 'pushbutton', ...
                 'String', 'Export', ...
                 'Units', 'normalized', ...
-                'Position', [0.55 0.96 0.08 0.03], ...
+                'Position', [0.22 0.96 0.08 0.03], ...
+                'FontSize', 8, ...
                 'Callback', @obj.OnExportFigure);
 
-            % 归一化模式下拉框
+            uicontrol(obj.RightPanel, 'Style', 'pushbutton', ...
+                'String', 'Clear Plot', ...
+                'Units', 'normalized', ...
+                'Position', [0.31 0.96 0.09 0.03], ...
+                'FontSize', 8, ...
+                'Callback', @obj.OnCloseAllFigures);
+
+            uicontrol(obj.RightPanel, 'Style', 'pushbutton', ...
+                'String', 'FFT', ...
+                'Units', 'normalized', ...
+                'Position', [0.42 0.96 0.07 0.03], ...
+                'FontSize', 8, ...
+                'Callback', @(s,e) obj.OnAnalysisTabClicked(obj.Session.FocusedAxes, 'fft'));
+
+            uicontrol(obj.RightPanel, 'Style', 'pushbutton', ...
+                'String', 'PSD', ...
+                'Units', 'normalized', ...
+                'Position', [0.50 0.96 0.07 0.03], ...
+                'FontSize', 8, ...
+                'Callback', @(s,e) obj.OnAnalysisTabClicked(obj.Session.FocusedAxes, 'psd'));
+
             obj.NormModeDropdown = uicontrol(obj.RightPanel, 'Style', 'popupmenu', ...
                 'String', {'None', 'Min-Max', 'Z-Score', 'Mean Zero'}, ...
                 'Value', 1, ...
                 'Units', 'normalized', ...
-                'Position', [0.65 0.96 0.12 0.03], ...
+                'Position', [0.59 0.96 0.12 0.03], ...
                 'FontSize', 8);
 
-            % 归一化按钮
             obj.NormButton = uicontrol(obj.RightPanel, 'Style', 'pushbutton', ...
                 'String', 'Norm', ...
                 'Units', 'normalized', ...
-                'Position', [0.78 0.96 0.06 0.03], ...
+                'Position', [0.72 0.96 0.06 0.03], ...
                 'FontSize', 8, ...
                 'Callback', @obj.OnNormalizeAxes);
 
             uicontrol(obj.RightPanel, 'Style', 'pushbutton', ...
                 'String', 'Calc', ...
                 'Units', 'normalized', ...
-                'Position', [0.85 0.96 0.06 0.03], ...
+                'Position', [0.79 0.96 0.06 0.03], ...
                 'FontSize', 8, ...
                 'Callback', @obj.OnCalcChannel);
 
-            uicontrol(obj.RightPanel, 'Style', 'pushbutton', ...
-                'String', 'Undo', ...
-                'Units', 'normalized', ...
-                'Position', [0.92 0.96 0.06 0.03], ...
-                'FontSize', 8, ...
-                'Callback', @obj.OnUndo);
-
             % Axes 容器
             obj.AxesContainer = uipanel(obj.RightPanel, ...
-                'Position', [0 0.12 1 0.83], ...
+                'Position', [0 0 1 0.95], ...
                 'Title', '', ...
                 'BorderType', 'none');
-
-            % 选区面板
-            obj.SelectionPanel = uipanel(obj.RightPanel, ...
-                'Position', [0 0.06 1 0.06], ...
-                'Title', 'Selection');
-
-            uicontrol(obj.SelectionPanel, 'Style', 'text', ...
-                'String', 'Start:', ...
-                'Units', 'normalized', ...
-                'Position', [0.01 0.2 0.08 0.6], ...
-                'HorizontalAlignment', 'left');
-
-            obj.SelectionStartEdit = uicontrol(obj.SelectionPanel, 'Style', 'edit', ...
-                'Units', 'normalized', ...
-                'Position', [0.09 0.1 0.15 0.8], ...
-                'Callback', @obj.OnSelectionStartChanged);
-
-            uicontrol(obj.SelectionPanel, 'Style', 'text', ...
-                'String', 'End:', ...
-                'Units', 'normalized', ...
-                'Position', [0.26 0.2 0.08 0.6], ...
-                'HorizontalAlignment', 'left');
-
-            obj.SelectionEndEdit = uicontrol(obj.SelectionPanel, 'Style', 'edit', ...
-                'Units', 'normalized', ...
-                'Position', [0.34 0.1 0.15 0.8], ...
-                'Callback', @obj.OnSelectionEndChanged);
-
-            uicontrol(obj.SelectionPanel, 'Style', 'pushbutton', ...
-                'String', 'Apply', ...
-                'Units', 'normalized', ...
-                'Position', [0.52 0.1 0.1 0.8], ...
-                'Callback', @obj.OnApplySelection);
-
-            uicontrol(obj.SelectionPanel, 'Style', 'pushbutton', ...
-                'String', 'Undo', ...
-                'Units', 'normalized', ...
-                'Position', [0.64 0.1 0.1 0.8], ...
-                'Callback', @obj.OnUndoSelection);
-
-            % 状态栏
-            obj.StatusBar = uicontrol(obj.RightPanel, 'Style', 'text', ...
-                'String', 'Ready', ...
-                'Units', 'normalized', ...
-                'Position', [0 0 1 0.05], ...
-                'HorizontalAlignment', 'left', ...
-                'BackgroundColor', [0.94 0.94 0.94]);
         end
 
         % ---- 通道池 UI ----
@@ -241,9 +194,21 @@ classdef TimeSeriesAnalyzer < handle
                 return;
             end
 
-            % 初始化展开状态（默认折叠）
-            if isempty(obj.DatasetExpanded_) || length(obj.DatasetExpanded_) ~= nDatasets
+            % 初始化展开状态（保留已有，新增默认折叠）
+            if isempty(obj.DatasetExpanded_)
                 obj.DatasetExpanded_ = false(1, nDatasets);
+            elseif length(obj.DatasetExpanded_) < nDatasets
+                obj.DatasetExpanded_(end+1:nDatasets) = false;
+            elseif length(obj.DatasetExpanded_) > nDatasets
+                obj.DatasetExpanded_ = obj.DatasetExpanded_(1:nDatasets);
+            end
+            % 同步选中状态
+            if isempty(obj.SelectedDatasets_)
+                obj.SelectedDatasets_ = false(1, nDatasets);
+            elseif length(obj.SelectedDatasets_) < nDatasets
+                obj.SelectedDatasets_(end+1:nDatasets) = false;
+            elseif length(obj.SelectedDatasets_) > nDatasets
+                obj.SelectedDatasets_ = obj.SelectedDatasets_(1:nDatasets);
             end
 
             yPos = 0.96;
@@ -264,26 +229,33 @@ classdef TimeSeriesAnalyzer < handle
                     displayName = dsName;
                 end
 
-                % 标题行（可点击展开/折叠）
+                % 标题行（可点击展开/折叠，Ctrl+点击多选）
                 if expanded
                     arrow = '▼';
                 else
                     arrow = '▶';
                 end
                 headerText = sprintf('%s %s (%d)', arrow, displayName, nCols);
+                selected = obj.SelectedDatasets_(d);
+                if selected
+                    bgColor = [0.85 0.92 1.0];  % 选中高亮
+                else
+                    bgColor = [0.94 0.94 0.94];  % 默认
+                end
                 h = uicontrol(obj.ChannelPanel, 'Style', 'pushbutton', ...
                     'String', headerText, ...
                     'Units', 'normalized', ...
                     'Position', [0 yPos 1 headerH], ...
                     'HorizontalAlignment', 'left', ...
                     'FontSize', 8, ...
+                    'BackgroundColor', bgColor, ...
                     'TooltipString', dsName, ...
-                    'Callback', @(src, evt) obj.OnToggleDataset(d));
+                    'Callback', @(src, evt) obj.OnDatasetHeaderClick(d));
 
-                % 数据集标题右键菜单
+                % 数据集标题右键菜单（作用于所有选中的数据集）
                 cm = uicontextmenu(obj.MainFigure);
                 uimenu(cm, 'Text', '设置采样率...', ...
-                    'Callback', @(src, evt) obj.OnSetSampleRate(d));
+                    'Callback', @(src, evt) obj.OnSetSampleRateForSelected(d));
                 set(h, 'UIContextMenu', cm);
 
                 obj.ChannelControls{end+1} = struct('handle', h, 'type', 'header', ...
@@ -293,32 +265,38 @@ classdef TimeSeriesAnalyzer < handle
                 % 展开时显示通道
                 if expanded
                     for c = 1:nCols
-                        % 检查是否有切片标记
+                        % 检查是否在当前 axes 上 + 切片标记
                         sliceTag = '';
+                        isChecked = false;
                         chansOnAxes = obj.Session.GetAxesChannels(obj.Session.FocusedAxes);
                         for sc = 1:length(chansOnAxes)
                             if chansOnAxes{sc}.DatasetIdx == d && chansOnAxes{sc}.ColIdx == c
+                                isChecked = true;
                                 if isfield(chansOnAxes{sc}, 'SliceRange')
                                     sr = chansOnAxes{sc}.SliceRange;
-                                    if sr(1) > 1 || sr(2) < length(chansOnAxes{sc}.Data)
-                                        sliceTag = ' [S]';
+                                    totalN = length(chansOnAxes{sc}.Data);
+                                    segLen = sr(2) - sr(1) + 1;
+                                    if sr(1) > 1 || sr(2) < totalN || sr(2) > totalN
+                                        sliceTag = sprintf(' [%d~%d L%d]', sr(1), sr(2), segLen);
                                     end
                                 end
                                 break;
                             end
                         end
 
-                        label = sprintf('%d: %s%s', c, ds.GetColumnName(c), sliceTag);
+                        label = sprintf('%d: %s (%d)%s', c, ds.GetColumnName(c), ds.RowCount, sliceTag);
                         h = uicontrol(obj.ChannelPanel, 'Style', 'checkbox', ...
                             'String', label, ...
                             'Units', 'normalized', ...
                             'Position', [0.05 yPos 0.93 lineH], ...
-                            'Value', 0, ...
+                            'Value', isChecked, ...
                             'FontSize', 8, ...
                             'Callback', @(src, evt) obj.OnChannelCheckbox(d, c, src));
 
-                        % 注册右键菜单（切片）
+                        % 注册右键菜单（重命名 + 切片）
                         cm = uicontextmenu(obj.MainFigure);
+                        uimenu(cm, 'Text', '重命名...', ...
+                            'Callback', @(src, evt) obj.OnRenameChannel(d, c));
                         uimenu(cm, 'Text', '设置切片范围...', ...
                             'Callback', @(src, evt) obj.OnChannelSliceDialog(d, c));
                         uimenu(cm, 'Text', '切片重置', ...
@@ -339,113 +317,125 @@ classdef TimeSeriesAnalyzer < handle
             end
         end
 
-        % ---- Axes Tab 栏 ----
+        function SetupAxesContextMenu(obj, axesIdx)
+        % SetupAxesContextMenu 为指定 axes 设置右键上下文菜单
+            ax = obj.PlotCtrl.GetAxesHandle(axesIdx);
+            if isempty(ax) || ~isvalid(ax), return; end
 
-        function CreateAxesTabBar(obj, axesIdx)
-            while length(obj.AxesTabBars) < axesIdx
-                obj.AxesTabBars{end+1} = {}; %#ok<AGROW>
-                obj.AxesAnalysisType{end+1} = 'time'; %#ok<AGROW>
-            end
-
-            tabTypes = {'Time', 'FFT', 'PSD', 'Integral', 'MADSD'};
-            tabWidth = 0.08;
-            startX = 0.01;
-
-            buttons = {};
-            for i = 1:length(tabTypes)
-                btn = uicontrol(obj.AxesContainer, 'Style', 'pushbutton', ...
-                    'String', tabTypes{i}, ...
-                    'Units', 'normalized', ...
-                    'Position', [startX + (i-1)*tabWidth, 0.96, tabWidth, 0.03], ...
-                    'FontSize', 8, ...
-                    'Callback', @(src, evt) obj.OnAnalysisTabClicked(axesIdx, lower(tabTypes{i})));
-                buttons{end+1} = btn; %#ok<AGROW>
-            end
-            obj.AxesTabBars{axesIdx} = buttons;
-            obj.AxesAnalysisType{axesIdx} = 'time';
+            cm = uicontextmenu('Parent', obj.MainFigure);
+            uimenu(cm, 'Text', '重置视图', ...
+                'Callback', @(s,e) obj.ResetAxesView(axesIdx));
+            uimenu(cm, 'Text', '清除数据提示', ...
+                'Callback', @(s,e) delete(findall(ax, 'Type', 'hggroup')));
+            uimenu(cm, 'Text', '网格开关', ...
+                'Callback', @(s,e) obj.ToggleGrid(ax));
+            uimenu(cm, 'Text', '导出到新窗口', ...
+                'Callback', @(s,e) obj.PlotCtrl.ExportToFigure(axesIdx));
+            ax.UIContextMenu = cm;
         end
 
-        function SetupAxesClickFocus(obj, axesIdx)
-        % SetupAxesClickFocus 注册 axes 点击聚焦回调
-            callback = @(src, evt) obj.OnAxesClicked(axesIdx);
-            obj.PlotCtrl.SetAxesClickCallback(axesIdx, callback);
+        function ResetAxesView(obj, axesIdx)
+        % ResetAxesView 重置指定 axes 的视图范围
+            ax = obj.PlotCtrl.GetAxesHandle(axesIdx);
+            if isempty(ax) || ~isvalid(ax), return; end
+            zoom(ax, 'reset');
         end
+
+        function ToggleGrid(~, ax)
+        % ToggleGrid 切换 axes 网格显示
+            if isempty(ax) || ~isvalid(ax), return; end
+            if strcmp(ax.XGrid, 'on')
+                grid(ax, 'off');
+            else
+                grid(ax, 'on');
+            end
+        end
+
     end
 
     % Callbacks
     methods (Access = private)
         function OnClose(obj, ~, ~)
+            % 关闭所有子窗口（频谱弹窗、导出窗口等）
+            figs = findall(0, 'Type', 'figure');
+            for i = 1:length(figs)
+                if figs(i) ~= obj.MainFigure && isvalid(figs(i))
+                    try delete(figs(i)); catch, end
+                end
+            end
             delete(obj.MainFigure);
         end
 
-        function OnKeyPress(obj, ~, evt)
-            switch evt.Key
-                case 'o'
-                    if any(strcmp(evt.Modifier, 'control'))
-                        obj.OnBrowseFile([], []);
+        function OnAxesClicked(obj, src, ~)
+        % OnAxesClicked axes ButtonDownFcn：单击选中 axes
+            sel = get(obj.MainFigure, 'SelectionType');
+            if ~strcmp(sel, 'normal'), return; end
+
+            for i = 1:obj.PlotCtrl.GetAxesCount()
+                if obj.PlotCtrl.GetAxesHandle(i) == src
+                    obj.Session.SetFocusedAxes(i);
+                    obj.UpdateAxesHighlight();
+                    return;
+                end
+            end
+        end
+
+        % ---- 游标与缩放 ----
+
+        function OnMouseMotion(obj, ~, ~)
+        % OnMouseMotion 鼠标移动：状态栏显示坐标
+
+            try
+                hitObj = hittest(obj.MainFigure);
+                if isempty(hitObj) || ~isvalid(hitObj)
+                    obj.PlotCtrl.ClearStatusBar();
+                    return;
+                end
+
+                ax = ancestor(hitObj, 'axes');
+                if isempty(ax)
+                    obj.PlotCtrl.ClearStatusBar();
+                    return;
+                end
+
+                % 找到对应 axes 索引
+                axesIdx = 0;
+                for i = 1:obj.PlotCtrl.GetAxesCount()
+                    if obj.PlotCtrl.GetAxesHandle(i) == ax
+                        axesIdx = i;
+                        break;
                     end
-                case 'e'
-                    if any(strcmp(evt.Modifier, 'control'))
-                        obj.OnExportFigure([], []);
+                end
+                if axesIdx == 0
+                    obj.PlotCtrl.ClearStatusBar();
+                    return;
+                end
+
+                pt = ax.CurrentPoint;
+                obj.PlotCtrl.UpdateStatusBar(pt(1,1), pt(1,2), axesIdx);
+            catch
+                obj.PlotCtrl.ClearStatusBar();
+            end
+        end
+
+        function UpdateAxesHighlight(obj)
+        % UpdateAxesHighlight 高亮聚焦的 axes（粗边框）
+            focused = obj.Session.FocusedAxes;
+            for i = 1:obj.PlotCtrl.GetAxesCount()
+                ax = obj.PlotCtrl.GetAxesHandle(i);
+                if ~isempty(ax) && isvalid(ax)
+                    if i == focused
+                        set(ax, 'Box', 'on', 'LineWidth', 1.5);
+                    else
+                        set(ax, 'Box', 'off', 'LineWidth', 0.5);
                     end
-                case 'z'
-                    if any(strcmp(evt.Modifier, 'control'))
-                        obj.OnUndo([], []);
-                    end
-                case {'1','2','3','4','5','6'}
-                    idx = str2double(evt.Key);
-                    if idx <= obj.PlotCtrl.GetAxesCount()
-                        obj.Session.SetFocusedAxes(idx);
-                    end
-                case 'f'
-                    axIdx = obj.Session.FocusedAxes;
-                    obj.OnAnalysisTabClicked(axIdx, 'fft');
-                case 'p'
-                    axIdx = obj.Session.FocusedAxes;
-                    obj.OnAnalysisTabClicked(axIdx, 'psd');
-                case 't'
-                    axIdx = obj.Session.FocusedAxes;
-                    obj.OnAnalysisTabClicked(axIdx, 'time');
-                case 'delete'
-                    axIdx = obj.Session.FocusedAxes;
-                    obj.PlotCtrl.ClearAxes(axIdx);
-                    obj.Session.ClearAxes(axIdx);
+                end
             end
         end
 
         function OnDatasetsUpdated(obj, ~, ~)
         % OnDatasetsUpdated 数据集变更
             obj.RebuildChannelList();
-            obj.UpdateStatusBar();
-        end
-
-        function OnChannelsUpdated(obj, ~, ~)
-        % OnChannelsUpdated axes 通道变更
-            obj.UpdateStatusBar();
-        end
-
-        function OnSelectionChanged(obj, ~, ~)
-        % OnSelectionChanged 选区变更
-            range = obj.Session.SelectionRange;
-
-            % 更新编辑框（用第一个数据集的采样率换算时间）
-            if obj.Session.HasDataset()
-                ds = obj.Session.GetDataset(1);
-                sampleTime = ds.SampleTime;
-                set(obj.SelectionStartEdit, 'String', ...
-                    sprintf('%.6f', range(1) * sampleTime));
-                set(obj.SelectionEndEdit, 'String', ...
-                    sprintf('%.6f', range(2) * sampleTime));
-            end
-
-            % 刷新所有 axes
-            obj.AnalysisEngine_.RefreshAll();
-            obj.UpdateStatusBar();
-        end
-
-        function OnAxesClicked(obj, axesIdx)
-        % OnAxesClicked axes 点击聚焦
-            obj.Session.SetFocusedAxes(axesIdx);
         end
 
         function OnChannelCheckbox(obj, datasetIdx, colIdx, src)
@@ -459,26 +449,19 @@ classdef TimeSeriesAnalyzer < handle
 
                 % 确保 axes 存在
                 while obj.PlotCtrl.GetAxesCount() < axIdx
-                    idx = obj.PlotCtrl.AddAxes();
+                    idx = obj.PlotCtrl.AddAxes(@obj.OnAxesClicked);
                     obj.Session.AddAxes();
-                    obj.CreateAxesTabBar(idx);
-                    obj.SetupAxesClickFocus(idx);
+                    obj.SetupAxesContextMenu(idx);
                 end
 
                 % 运行分析
-                analysisType = 'time';
-                if axIdx <= length(obj.AxesAnalysisType) && ~isempty(obj.AxesAnalysisType{axIdx})
-                    analysisType = obj.AxesAnalysisType{axIdx};
-                end
+                analysisType = obj.Session.GetAxesAnalysisType(axIdx);
                 obj.AnalysisEngine_.RunAnalysis(axIdx, analysisType);
             else
                 % 取消勾选：从 axes 移除该通道
                 obj.Session.RemoveChannelFromAxes(axIdx, datasetIdx, colIdx);
                 % 重绘
-                analysisType = 'time';
-                if axIdx <= length(obj.AxesAnalysisType) && ~isempty(obj.AxesAnalysisType{axIdx})
-                    analysisType = obj.AxesAnalysisType{axIdx};
-                end
+                analysisType = obj.Session.GetAxesAnalysisType(axIdx);
                 chans = obj.Session.GetAxesChannels(axIdx);
                 if isempty(chans)
                     obj.PlotCtrl.ClearAxes(axIdx);
@@ -490,13 +473,14 @@ classdef TimeSeriesAnalyzer < handle
 
         function OnAnalysisTabClicked(obj, axesIdx, analysisType)
         % OnAnalysisTabClicked 分析类型标签点击
-            while length(obj.AxesAnalysisType) < axesIdx
-                obj.AxesAnalysisType{end+1} = 'time'; %#ok<AGROW>
-            end
-            obj.AxesAnalysisType{axesIdx} = analysisType;
+            obj.Session.SetAxesAnalysisType(axesIdx, analysisType);
 
             chans = obj.Session.GetAxesChannels(axesIdx);
-            if ~isempty(chans)
+            if isempty(chans), return; end
+
+            if strcmpi(analysisType, 'fft') || strcmpi(analysisType, 'psd')
+                obj.ShowSpectrumPopup(chans, analysisType);
+            else
                 obj.AnalysisEngine_.RunAnalysis(axesIdx, analysisType);
             end
         end
@@ -515,44 +499,56 @@ classdef TimeSeriesAnalyzer < handle
 
                 obj.Session.SetLastPath(1, rootDir);
 
-                % 批量导入（子文件夹感知）
-                results = DataReaderFactory.BatchImportFolder(rootDir);
+                % 统一导入（递归发现 + 逐目录处理）
+                [results, ~] = DataReaderFactory.Import(rootDir);
 
                 if isempty(results)
-                    errordlg('未找到可导入的数据文件', 'Error');
+                    errordlg('未找到可导入的数据文件', '错误');
                     return;
                 end
 
-                % 将每个结果作为数据集加入 Session
+                % 将每个结果作为数据集加入 Session（跳过已导入的）
+                existingPaths = obj.Session.DatasetPaths_;
                 for i = 1:length(results)
-                    ds = DataReaderFactory.LoadStandard(results(i).matPath);
-                    obj.Session.AddDataset(ds, results(i).name, results(i).matPath);
+                    if any(strcmp(results{i}.matPath, existingPaths))
+                        continue;
+                    end
+                    ds = DataReaderFactory.LoadStandard(results{i}.matPath);
+                    obj.Session.AddDataset(ds, results{i}.name, results{i}.matPath);
                 end
 
             catch e
-                errordlg(sprintf('浏览文件夹失败:\n%s', e.message), 'Error');
+                errordlg(sprintf('浏览文件夹失败:\n%s', e.message), '错误');
             end
         end
 
         function OnImportFile(obj, ~, ~)
             startPath = obj.Session.GetLastPath(1);
-            if isempty(startPath)
-                startPath = pwd;
-            end
+            if isempty(startPath), startPath = pwd; end
 
-            [fileName, filePath] = FileExplorer.SelectFile(startPath, ...
-                'Data Files (*.dat;*.csv;*.txt;*.xlsx;*.mat)|*.dat;*.csv;*.txt;*.xlsx;*.mat');
+            [~, filePaths] = FileExplorer.SelectFiles(startPath, ...
+                {'*.dat;*.csv;*.txt;*.xlsx', 'Data Files (*.dat;*.csv;*.txt;*.xlsx)'});
 
-            if ~isempty(filePath)
+            if ~isempty(filePaths)
                 try
-                    outputDir = fileparts(filePath);
-                    matPath = DataReaderFactory.ImportToStandard(filePath, outputDir);
-                    ds = DataReaderFactory.LoadStandard(matPath);
-                    [~, fname] = fileparts(filePath);
-                    obj.Session.AddDataset(ds, fname, matPath);
+                    outputDir = fileparts(filePaths{1});
+                    fileStructs = cell(1, length(filePaths));
+                    for k = 1:length(filePaths)
+                        [~, fname] = fileparts(filePaths{k});
+                        fileStructs{k} = struct('path', filePaths{k}, 'fname', fname);
+                    end
+                    results = DataReaderFactory.ProcessFileGroup(fileStructs, outputDir);
+                    existingPaths = obj.Session.DatasetPaths_;
+                    for i = 1:length(results)
+                        if any(strcmp(results{i}.matPath, existingPaths))
+                            continue;
+                        end
+                        ds = DataReaderFactory.LoadStandard(results{i}.matPath);
+                        obj.Session.AddDataset(ds, results{i}.name, results{i}.matPath);
+                    end
                     obj.Session.SetLastPath(1, outputDir);
                 catch e
-                    errordlg(sprintf('导入失败:\n%s', e.message), 'Error');
+                    errordlg(sprintf('导入失败:\n%s', e.message), '错误');
                 end
             end
         end
@@ -561,154 +557,92 @@ classdef TimeSeriesAnalyzer < handle
         % OnClearAll 重置全部（清空数据集和 axes）
             obj.Session.ClearAllDatasets();
             obj.PlotCtrl.ClearAll();
-            for i = 1:length(obj.AxesTabBars)
-                for j = 1:length(obj.AxesTabBars{i})
-                    if isvalid(obj.AxesTabBars{i}{j})
-                        delete(obj.AxesTabBars{i}{j});
-                    end
-                end
-            end
-            obj.AxesTabBars = {};
-            obj.AxesAnalysisType = {};
+            obj.Session.SetFocusedAxes(1);
         end
 
-        function OnToggleDataset(obj, dsIdx, ~)
-        % OnToggleDataset 切换数据集展开/折叠状态
-            if dsIdx >= 1 && dsIdx <= length(obj.DatasetExpanded_)
-                obj.DatasetExpanded_(dsIdx) = ~obj.DatasetExpanded_(dsIdx);
+        function OnDatasetHeaderClick(obj, dsIdx)
+        % OnDatasetHeaderClick 左键点击数据集标题：展开/折叠，Ctrl+点击多选
+
+            if dsIdx < 1 || dsIdx > length(obj.DatasetExpanded_), return; end
+
+            % Ctrl+点击：切换选中状态
+            fig = obj.MainFigure;
+            ctrlDown = any(strcmp(get(fig, 'CurrentModifier'), 'control')) || ...
+                       any(strcmp(get(fig, 'CurrentModifier'), 'command'));
+            if ctrlDown
+                obj.SelectedDatasets_(dsIdx) = ~obj.SelectedDatasets_(dsIdx);
                 obj.RebuildChannelList();
-            end
-        end
-
-        function OnRetry(obj, ~, ~)
-        % OnRetry 重新读取 Excel，检测列名是否更新
-        %
-        % 遍历所有数据集，检查对应 Excel 文件的列名：
-        %   Excel 有列名且与 .mat 不同 → 更新 .mat 并刷新显示
-        %   Excel 列名全空或与 .mat 相同 → 跳过
-
-            nDatasets = obj.Session.DatasetCount;
-            if nDatasets == 0
                 return;
             end
 
-            updated = 0;
-            for i = 1:nDatasets
-                matPath = obj.Session.DatasetPaths_{i};
-                if isempty(matPath) || ~exist(matPath, 'file')
-                    continue;
-                end
+            % 普通点击：清除多选 + 展开/折叠
+            if any(obj.SelectedDatasets_)
+                obj.SelectedDatasets_(:) = false;
+            end
+            obj.DatasetExpanded_(dsIdx) = ~obj.DatasetExpanded_(dsIdx);
+            obj.RebuildChannelList();
+        end
 
-                % 推导 Excel 路径：xxx_standardized.mat → xxx_review.xlsx
-                xlsxPath = strrep(matPath, '_standardized.mat', '_review.xlsx');
-                if ~exist(xlsxPath, 'file')
-                    continue;
-                end
+        function ClearDatasetSelection(obj)
+        % ClearDatasetSelection 清除所有数据集多选状态（点击空白处触发）
+        % 如果有正在进行的内联重命名，先确认
 
-                try
-                    % 读取 Excel 列名
-                    if exist('readcell', 'file')
-                        raw = readcell(xlsxPath);
-                    else
-                        [~, ~, raw] = xlsread(xlsxPath); %#ok<XLSRD>
-                    end
-
-                    nCols = size(raw, 2);
-                    excelColNames = cell(1, nCols);
-                    for c = 1:nCols
-                        val = raw{1, c};
-                        if (ischar(val) || isstring(val)) && ~isempty(strtrim(char(val)))
-                            excelColNames{c} = strtrim(char(val));
-                        end
-                    end
-
-                    % Excel 列名全空 → 跳过
-                    if all(cellfun(@isempty, excelColNames))
-                        continue;
-                    end
-
-                    % 读取 .mat 列名
-                    loaded = load(matPath);
-                    matColNames = {};
-                    if isfield(loaded, 'sa_column_names')
-                        matColNames = loaded.sa_column_names;
-                    end
-
-                    % 比较：Excel 列名与 .mat 不同 → 更新
-                    if ~isequal(excelColNames, matColNames)
-                        loaded.sa_column_names = excelColNames;
-                        sa_data_matrix = loaded.sa_data_matrix; %#ok<NASGU>
-                        sa_sample_rate = loaded.sa_sample_rate; %#ok<NASGU>
-                        sa_column_names = loaded.sa_column_names; %#ok<NASGU>
-                        sa_units = loaded.sa_units; %#ok<NASGU>
-                        sa_descriptions = loaded.sa_descriptions; %#ok<NASGU>
-                        sa_source_file = loaded.sa_source_file; %#ok<NASGU>
-                        sa_source_format = loaded.sa_source_format; %#ok<NASGU>
-                        sa_import_time = loaded.sa_import_time; %#ok<NASGU>
-                        save(matPath, ...
-                            'sa_data_matrix', 'sa_sample_rate', 'sa_column_names', ...
-                            'sa_units', 'sa_descriptions', 'sa_source_file', ...
-                            'sa_source_format', 'sa_import_time');
-
-                        % 重新加载数据集
-                        ds = DataReaderFactory.LoadStandard(matPath);
-                        obj.Session.UpdateDataset(i, ds);
-                        updated = updated + 1;
-                    end
-                catch
-                    % 读取失败，跳过
+            % 检查是否有活跃的 edit 控件（内联重命名中）
+            for i = 1:length(obj.ChannelControls)
+                cc = obj.ChannelControls{i};
+                if strcmp(cc.type, 'edit') && isvalid(cc.handle)
+                    obj.ApplyRename(cc.datasetIdx, cc.colIdx, get(cc.handle, 'String'));
+                    return;  % ApplyRename 内部会 RebuildChannelList
                 end
             end
 
-            if updated > 0
+            if any(obj.SelectedDatasets_)
+                obj.SelectedDatasets_(:) = false;
                 obj.RebuildChannelList();
-                fprintf('[Retry] 更新了 %d 个数据集的列名\n', updated);
             end
         end
 
-        function OnSetSampleRate(obj, datasetIdx)
-        % OnSetSampleRate 右键数据集标题，设置采样率
-            ds = obj.Session.GetDataset(datasetIdx);
-            dsName = obj.Session.GetDatasetName(datasetIdx);
-            currentRate = ds.SampleRate;
+        function OnSetSampleRateForSelected(obj, rightClickIdx)
+        % OnSetSampleRateForSelected 对所有选中的数据集设置采样率
+        % rightClickIdx - 右键点击的数据集索引，当无多选时作为回退目标
 
-            if isempty(currentRate)
-                defaultStr = '';
-            else
-                defaultStr = num2str(currentRate);
+            selected = find(obj.SelectedDatasets_);
+            if isempty(selected)
+                selected = rightClickIdx;
             end
 
-            answer = inputdlg(sprintf('数据集: %s\n采样率 (Hz):', dsName), ...
-                '设置采样率', 1, {defaultStr});
-            if isempty(answer), return; end
-
-            newRate = str2double(answer{1});
+            % 弹窗输入采样率
+            dsName = obj.Session.GetDatasetName(selected(1));
+            if ~isscalar(selected)
+                dsName = sprintf('%s 等 %d 个', dsName, length(selected));
+            end
+            newRate = obj.ShowSampleRateDialog(dsName);
+            if isempty(newRate), return; end
             if isnan(newRate) || newRate <= 0
                 errordlg('采样率必须为正数', '错误');
                 return;
             end
 
-            % 更新 Dataset 对象
-            obj.Session.UpdateSampleRate(datasetIdx, newRate);
+            for i = 1:length(selected)
+                idx = selected(i);
+                obj.Session.UpdateSampleRate(idx, newRate);
 
-            % 写回 .mat 文件
-            matPath = obj.Session.DatasetPaths_{datasetIdx};
-            if ~isempty(matPath) && exist(matPath, 'file')
-                DataReaderFactory.UpdateSampleRateInMat(matPath, newRate);
-            end
-
-            % 写回 _meta.json
-            jsonPath = strrep(matPath, '_standardized.mat', '_standardized_meta.json');
-            if exist(jsonPath, 'file')
-                try
-                    meta = jsondecode(fileread(jsonPath));
-                    meta.sample_rate = newRate;
-                    DataReaderFactory.WriteJson(jsonPath, meta);
-                catch
+                matPath = obj.Session.GetDatasetPath(idx);
+                if ~isempty(matPath) && exist(matPath, 'file')
+                    DataReaderFactory.UpdateSampleRateInMat(matPath, newRate);
+                    jsonPath = strrep(matPath, '_standardized.mat', '_standardized_meta.json');
+                    if exist(jsonPath, 'file')
+                        try
+                            meta = jsondecode(fileread(jsonPath));
+                            meta.sample_rate = newRate;
+                            DataReaderFactory.WriteJson(jsonPath, meta);
+                        catch
+                        end
+                    end
                 end
+                dsName = obj.Session.GetDatasetName(idx);
+                fprintf('[SampleRate] %s → %.4g Hz\n', dsName, newRate);
             end
-
-            fprintf('[SampleRate] %s → %.4g Hz\n', dsName, newRate);
         end
 
         function OnChannelSliceDialog(obj, datasetIdx, colIdx)
@@ -734,26 +668,25 @@ classdef TimeSeriesAnalyzer < handle
             currentRange = chan.SliceRange;
             currentLen = currentRange(2) - currentRange(1) + 1;
 
-            % 输入对话框：起点 + 长度
-            answer = inputdlg({'起点行号:', '长度:'}, '设置切片范围', ...
-                1, {num2str(currentRange(1)), num2str(currentLen)});
-            if isempty(answer), return; end
-
-            startRow = round(str2double(answer{1}));
-            segLen = round(str2double(answer{2}));
-            if isnan(startRow) || isnan(segLen) || startRow < 1 || segLen < 1 || startRow + segLen - 1 > totalRows
-                errordlg(sprintf('范围无效 (起点 1~%d, 长度 ≥1)', totalRows), '错误');
+            % 输入对话框：起点 + 长度（支持环形缓冲）
+            ds = obj.Session.GetDataset(datasetIdx);
+            colName = ds.GetColumnName(colIdx);
+            [startRow, segLen] = obj.ShowSliceDialog(colName, totalRows, currentRange(1), currentLen);
+            if isempty(startRow), return; end
+            if isnan(startRow) || isnan(segLen) || startRow < 1 || segLen < 1
+                errordlg('起点 ≥1, 长度 ≥1', '错误');
                 return;
             end
             endRow = startRow + segLen - 1;
+            if endRow > totalRows && segLen > startRow
+                errordlg(sprintf('回绕时长度不能超过起点 %d', startRow), '错误');
+                return;
+            end
 
             obj.Session.SetChannelSlice(axIdx, chanIdx, startRow, endRow);
 
             % 重绘
-            analysisType = 'time';
-            if axIdx <= length(obj.AxesAnalysisType) && ~isempty(obj.AxesAnalysisType{axIdx})
-                analysisType = obj.AxesAnalysisType{axIdx};
-            end
+            analysisType = obj.Session.GetAxesAnalysisType(axIdx);
             obj.AnalysisEngine_.RunAnalysis(axIdx, analysisType);
             obj.RebuildChannelList();
         end
@@ -776,10 +709,7 @@ classdef TimeSeriesAnalyzer < handle
             obj.Session.SetChannelSlice(axIdx, chanIdx, 1, length(chan.Data));
 
             % 重绘
-            analysisType = 'time';
-            if axIdx <= length(obj.AxesAnalysisType) && ~isempty(obj.AxesAnalysisType{axIdx})
-                analysisType = obj.AxesAnalysisType{axIdx};
-            end
+            analysisType = obj.Session.GetAxesAnalysisType(axIdx);
             obj.AnalysisEngine_.RunAnalysis(axIdx, analysisType);
             obj.RebuildChannelList();
         end
@@ -796,19 +726,24 @@ classdef TimeSeriesAnalyzer < handle
             val = get(obj.NormModeDropdown, 'Value');
             normMode = modes{val};
 
-            obj.Session.SetAxesNormMode(axIdx, normMode);
+            % 先用 none 模式重绘（隐藏 axes 避免闪烁）
+            ax = obj.PlotCtrl.GetAxesHandle(axIdx);
+            if ~isempty(ax) && isvalid(ax), ax.Visible = 'off'; end
 
-            if strcmpi(normMode, 'none')
-                % 重绘恢复原始数据
-                analysisType = 'time';
-                if axIdx <= length(obj.AxesAnalysisType) && ~isempty(obj.AxesAnalysisType{axIdx})
-                    analysisType = obj.AxesAnalysisType{axIdx};
-                end
-                obj.AnalysisEngine_.RunAnalysis(axIdx, analysisType);
-            else
-                % 执行归一化
-                obj.PlotCtrl.NormalizeAxes(axIdx, normMode, obj.Session);
+            obj.Session.SetAxesNormMode(axIdx, 'none');
+            obj.Session.SetAxesNormParams(axIdx, struct());
+            analysisType = obj.Session.GetAxesAnalysisType(axIdx);
+            obj.AnalysisEngine_.RunAnalysis(axIdx, analysisType);
+
+            % 设置目标归一化模式并应用
+            obj.Session.SetAxesNormMode(axIdx, normMode);
+            if ~strcmpi(normMode, 'none')
+                normParams = obj.ComputeNormParams(axIdx);
+                obj.Session.SetAxesNormParams(axIdx, normParams);
+                obj.PlotCtrl.NormalizeAxes(axIdx, normMode, normParams);
             end
+
+            if ~isempty(ax) && isvalid(ax), ax.Visible = 'on'; end
         end
 
         function OnCalcChannel(obj, ~, ~)
@@ -965,7 +900,7 @@ classdef TimeSeriesAnalyzer < handle
                     defaultName = sprintf('%s%s%s', nameA, ops{val}, nameB);
                 else
                     opNames = {'diff', 'cumsum', 'abs', 'sq', 'sqrt', 'log10', 'detrend', 'rms', 'smooth'};
-                    defaultName = sprintf('%s(%s)', opNames{val}, nameA);
+                    defaultName = sprintf('%s(%s)', opNames{val - 4}, nameA);
                 end
                 if length(defaultName) > 63
                     defaultName = defaultName(1:63);
@@ -1037,8 +972,18 @@ classdef TimeSeriesAnalyzer < handle
                         end
                     else
                         switch key
-                            case 'diff',    result = diff(dataA) * srA;
-                            case 'cumsum',  result = cumsum(dataA) / srA;
+                            case 'diff'
+                                if isempty(srA)
+                                    errordlg('请先设置采样率', '错误');
+                                    return;
+                                end
+                                result = diff(dataA) * srA;
+                            case 'cumsum'
+                                if isempty(srA)
+                                    errordlg('请先设置采样率', '错误');
+                                    return;
+                                end
+                                result = cumsum(dataA) / srA;
                             case 'abs',     result = abs(dataA);
                             case 'square',  result = dataA .^ 2;
                             case 'sqrt',    result = sqrt(abs(dataA));
@@ -1046,7 +991,7 @@ classdef TimeSeriesAnalyzer < handle
                             case 'detrend', result = detrend(dataA);
                             case 'rms'
                                 rmsVal = sqrt(mean(dataA.^2));
-                                set(obj.StatusBar, 'String', sprintf('RMS = %.6g', rmsVal));
+                                msgbox(sprintf('RMS = %.6g', rmsVal), 'RMS');
                                 close(dlg);
                                 return;
                             case 'smooth'
@@ -1069,7 +1014,7 @@ classdef TimeSeriesAnalyzer < handle
                     tempDir = tempname;
                     mkdir(tempDir);
                     colNames = {resultName};
-                    matPath = DataReaderFactory.SaveSubfolderResult(...
+                    matPath = DataReaderFactory.SaveStandard(...
                         result, colNames, tempDir, resultName, 'calc', 'calc');
                     newDs = DataReaderFactory.LoadStandard(matPath);
                     obj.Session.AddDataset(newDs, resultName, matPath);
@@ -1084,13 +1029,13 @@ classdef TimeSeriesAnalyzer < handle
 
         function OnAddAxes(obj, ~, ~)
             try
-                idx = obj.PlotCtrl.AddAxes();
+                idx = obj.PlotCtrl.AddAxes(@obj.OnAxesClicked);
                 obj.Session.AddAxes();
-                obj.CreateAxesTabBar(idx);
-                obj.SetupAxesClickFocus(idx);
+                obj.SetupAxesContextMenu(idx);
                 obj.Session.SetFocusedAxes(idx);
+                obj.UpdateAxesHighlight();
             catch e
-                errordlg(e.message, 'Error');
+                errordlg(e.message, '错误');
             end
         end
 
@@ -1099,15 +1044,6 @@ classdef TimeSeriesAnalyzer < handle
             if nAxes > 0
                 obj.PlotCtrl.RemoveAxes(nAxes);
                 obj.Session.RemoveAxes(nAxes);
-                if ~isempty(obj.AxesTabBars)
-                    for i = 1:length(obj.AxesTabBars{end})
-                        if isvalid(obj.AxesTabBars{end}{i})
-                            delete(obj.AxesTabBars{end}{i});
-                        end
-                    end
-                    obj.AxesTabBars(end) = [];
-                    obj.AxesAnalysisType(end) = [];
-                end
             end
         end
 
@@ -1127,80 +1063,295 @@ classdef TimeSeriesAnalyzer < handle
             obj.PlotCtrl.ExportToFigure(1:nAxes);
         end
 
-        function OnUndo(obj, ~, ~)
-            if obj.SelectionMgr.HasHistory()
-                obj.SelectionMgr.UndoSegment();
+        function OnCloseAllFigures(obj, ~, ~)
+        % Clear Plot：清除绘图、取消所有通道勾选、清空 axes 通道数据
+            obj.PlotCtrl.ClearAll();
+
+            % 取消所有通道 checkbox
+            for i = 1:length(obj.ChannelControls)
+                cc = obj.ChannelControls{i};
+                if strcmp(cc.type, 'checkbox') && isvalid(cc.handle)
+                    set(cc.handle, 'Value', 0);
+                end
+            end
+
+            % 清空 session 中所有 axes 的通道数据
+            for a = 1:obj.Session.AxesSlotCount
+                obj.Session.ClearAxes(a);
             end
         end
+    end
 
-        function OnSelectionStartChanged(obj, src, ~)
-            val = str2double(get(src, 'String'));
-            if isnan(val) || val < 0
-                return;
-            end
-            if obj.Session.HasDataset()
-                ds = obj.Session.GetDataset(1);
-                startRow = max(1, round(val / ds.SampleTime));
-                range = obj.Session.SelectionRange;
-                obj.SelectionMgr.SetRange(startRow, range(2));
-            end
-        end
+    methods (Access = private)
+        function normParams = ComputeNormParams(obj, axIdx)
+        % ComputeNormParams 从当前 axes 视图计算归一化参数
 
-        function OnSelectionEndChanged(obj, src, ~)
-            val = str2double(get(src, 'String'));
-            if isnan(val) || val < 0
-                return;
-            end
-            if obj.Session.HasDataset()
-                ds = obj.Session.GetDataset(1);
-                endRow = min(ds.RowCount, round(val / ds.SampleTime));
-                range = obj.Session.SelectionRange;
-                obj.SelectionMgr.SetRange(range(1), endRow);
-            end
-        end
-
-        function OnApplySelection(obj, ~, ~)
-            startVal = str2double(get(obj.SelectionStartEdit, 'String'));
-            endVal = str2double(get(obj.SelectionEndEdit, 'String'));
-            if isnan(startVal) || isnan(endVal)
-                return;
-            end
-            if obj.Session.HasDataset()
-                ds = obj.Session.GetDataset(1);
-                startRow = max(1, round(startVal / ds.SampleTime));
-                endRow = min(ds.RowCount, round(endVal / ds.SampleTime));
-                obj.SelectionMgr.SetRange(startRow, endRow);
-            end
-        end
-
-        function OnUndoSelection(obj, ~, ~)
-            if obj.SelectionMgr.HasHistory()
-                obj.SelectionMgr.UndoSegment();
-            end
-        end
-
-        function UpdateStatusBar(obj)
-            nDatasets = obj.Session.DatasetCount;
-            if nDatasets == 0
-                set(obj.StatusBar, 'String', 'Ready');
+            ax = obj.PlotCtrl.GetAxesHandle(axIdx);
+            if isempty(ax) || ~isvalid(ax)
+                normParams = struct();
                 return;
             end
 
-            % 统计所有 axes 的通道总数
-            totalChans = 0;
-            for i = 1:length(obj.Session.AxesData_)
-                chans = obj.Session.GetAxesChannels(i);
-                totalChans = totalChans + length(chans);
+            xl = xlim(ax);
+            refStart = max(1, round(xl(1)));
+            refEnd = round(xl(2));
+
+            chans = obj.Session.GetAxesChannels(axIdx);
+            if isempty(chans)
+                normParams = struct();
+                return;
             end
 
-            range = obj.Session.SelectionRange;
-            ds = obj.Session.GetDataset(1);
-            sampleTime = ds.SampleTime;
+            channelStats = {};
+            for i = 1:length(chans)
+                chan = chans{i};
+                signal = chan.Data;
+                totalLen = length(signal);
 
-            status = sprintf('Datasets: %d | Channels on axes: %d | Sel: %.3fs ~ %.3fs', ...
-                nDatasets, totalChans, ...
-                range(1)*sampleTime, range(2)*sampleTime);
-            set(obj.StatusBar, 'String', status);
+                if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
+                    sliceStart = chan.SliceRange(1);
+                else
+                    sliceStart = 1;
+                end
+
+                refStartLocal = max(1, refStart - sliceStart + 1);
+                refEndLocal = min(totalLen, refEnd - sliceStart + 1);
+                if refStartLocal >= refEndLocal
+                    refStartLocal = 1;
+                    refEndLocal = totalLen;
+                end
+
+                refSig = signal(refStartLocal:refEndLocal);
+
+                stats = struct();
+                stats.minY = min(refSig);
+                stats.maxY = max(refSig);
+                stats.meanY = mean(refSig);
+                stats.stdY = std(refSig);
+                channelStats{end+1} = stats; %#ok<AGROW>
+            end
+
+            normParams = struct();
+            normParams.refWindow = [refStart, refEnd];
+            normParams.channelStats = channelStats;
+        end
+
+        function OnRenameChannel(obj, datasetIdx, colIdx)
+        % OnRenameChannel 通道右键重命名 → 内联编辑
+
+            % 找到对应的 checkbox handle
+            chIdx = 0;
+            for i = 1:length(obj.ChannelControls)
+                cc = obj.ChannelControls{i};
+                if strcmp(cc.type, 'checkbox') && cc.datasetIdx == datasetIdx && cc.colIdx == colIdx
+                    chIdx = i;
+                    break;
+                end
+            end
+            if chIdx == 0, return; end
+
+            chHandle = obj.ChannelControls{chIdx}.handle;
+            if ~isvalid(chHandle), return; end
+
+            % 取 checkbox 位置和当前列名
+            pos = get(chHandle, 'Position');
+            ds = obj.Session.GetDataset(datasetIdx);
+            currentName = ds.GetColumnName(colIdx);
+
+            % 用 edit 替换 checkbox
+            delete(chHandle);
+            editH = uicontrol(obj.ChannelPanel, 'Style', 'edit', ...
+                'String', currentName, ...
+                'Units', 'normalized', ...
+                'Position', pos, ...
+                'FontSize', 8, ...
+                'HorizontalAlignment', 'left', ...
+                'UserData', struct('datasetIdx', datasetIdx, 'colIdx', colIdx));
+
+            % 更新 ChannelControls 记录
+            obj.ChannelControls{chIdx} = struct('handle', editH, 'type', 'edit', ...
+                'datasetIdx', datasetIdx, 'colIdx', colIdx);
+
+            % 聚焦并全选
+            uicontrol(editH);
+            drawnow;
+
+            % Enter 或失去焦点 → 确认；Escape → 取消
+            set(editH, 'Callback', @(src, evt) obj.ApplyRename(datasetIdx, colIdx, get(src, 'String')));
+            set(editH, 'KeyPressFcn', @(src, evt) obj.OnRenameKeyPress(src, evt, datasetIdx, colIdx));
+        end
+
+        function OnRenameKeyPress(obj, ~, evt, ~, ~)
+        % OnRenameKeyPress 内联重命名键盘处理（仅 Escape 取消，Enter 由 Callback 处理）
+
+            if strcmp(evt.Key, 'escape')
+                obj.RebuildChannelList();
+            end
+        end
+
+        function ApplyRename(obj, datasetIdx, colIdx, newName)
+        % ApplyRename 应用重命名并同步磁盘
+
+            newName = strtrim(newName);
+            ds = obj.Session.GetDataset(datasetIdx);
+            if isempty(newName) || strcmp(newName, ds.GetColumnName(colIdx))
+                obj.RebuildChannelList();
+                return;
+            end
+
+            % 1. 更新 Dataset 的 ColumnNames（内存）
+            newNames = ds.ColumnNames;
+            newNames{colIdx} = newName;
+            newDs = ds.RebuildWithColumnNames(newNames);
+            obj.Session.UpdateDataset(datasetIdx, newDs);
+
+            % 2. 同步到磁盘文件
+            matPath = obj.Session.GetDatasetMatPath(datasetIdx);
+            if ~isempty(matPath)
+                sa_column_names = newNames; %#ok<NASGU>
+                save(matPath, 'sa_column_names', '-append');
+                DataReaderFactory.UpdateColumnNamesInMeta(matPath, newNames);
+                xlsxPath = strrep(matPath, '_standardized.mat', '_review.xlsx');
+                try
+                    DataReaderFactory.ExportToExcel(matPath, xlsxPath);
+                catch
+                end
+            end
+
+            % 3. 刷新显示（UpdateDataset 已触发 DatasetsUpdated → RebuildChannelList）
+        end
+
+        function ShowSpectrumPopup(obj, chans, analysisType)
+        % ShowSpectrumPopup 弹窗显示原始信号 + 频谱分析
+        %
+        % 上面子图：原始时域信号
+        % 下面子图：FFT 或 PSD（对数频率坐标）
+
+            if isempty(chans), return; end
+
+            colors = {'b', 'r', 'g', 'c', 'm', 'k'};
+
+            fig = figure('Name', sprintf('Spectrum - %s', upper(analysisType)), ...
+                'NumberTitle', 'off', 'Position', [200 150 900 700]);
+
+            ax1 = subplot(2, 1, 1, 'Parent', fig);
+            ax2 = subplot(2, 1, 2, 'Parent', fig);
+
+            hold(ax1, 'on');
+            hold(ax2, 'on');
+
+            legendLabels1 = {};
+            legendLabels2 = {};
+
+            for c = 1:length(chans)
+                chan = chans{c};
+                signal = chan.Data;
+                ds = obj.Session.GetDataset(chan.DatasetIdx);
+                sampleRate = ds.SampleRate;
+
+                % 采样率未设置时提示用户
+                if isempty(sampleRate)
+                    dsName = obj.Session.GetDatasetName(chan.DatasetIdx);
+                    newRate = obj.ShowSampleRateDialog(dsName);
+                    if isempty(newRate), continue; end
+                    if isnan(newRate) || newRate <= 0
+                        errordlg('采样率必须为正数', '错误');
+                        continue;
+                    end
+                    obj.Session.UpdateSampleRate(chan.DatasetIdx, newRate);
+                    matPath = obj.Session.GetDatasetPath(chan.DatasetIdx);
+                    if ~isempty(matPath) && exist(matPath, 'file')
+                        DataReaderFactory.UpdateSampleRateInMat(matPath, newRate);
+                        jsonPath = strrep(matPath, '_standardized.mat', '_standardized_meta.json');
+                        if exist(jsonPath, 'file')
+                            try
+                                meta = jsondecode(fileread(jsonPath));
+                                meta.sample_rate = newRate;
+                                DataReaderFactory.WriteJson(jsonPath, meta);
+                            catch
+                            end
+                        end
+                    end
+                    sampleRate = newRate;
+                end
+
+                % 应用切片
+                if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
+                    startRow = chan.SliceRange(1);
+                    endRow = chan.SliceRange(2);
+                else
+                    startRow = 1;
+                    endRow = length(signal);
+                end
+                nSig = length(signal);
+                startRow = max(1, min(startRow, nSig));
+                if endRow <= nSig
+                    sig = signal(startRow:endRow);
+                else
+                    tail = signal(startRow:nSig);
+                    head = signal(1:endRow - nSig);
+                    sig = [tail; head];
+                end
+
+                sampleIdx = (0:length(sig)-1)';
+                colorIdx = mod(c-1, length(colors)) + 1;
+                chanColor = colors{colorIdx};
+                chanLabel = chan.Label;
+
+                % 上面子图：原始时域信号
+                plot(ax1, sampleIdx, sig, 'Color', chanColor, 'DisplayName', chanLabel);
+                legendLabels1{end+1} = chanLabel;
+
+                % 下面子图：频谱分析
+                switch lower(analysisType)
+                    case 'fft'
+                        [P1, freq] = SignalProcessor.ComputeFFTSingleSided(sig, sampleRate);
+                        % 跳过 DC(0 Hz)，自适应横轴
+                        if freq(1) == 0
+                            semilogx(ax2, freq(2:end), P1(2:end), 'Color', chanColor, 'DisplayName', chanLabel);
+                        else
+                            semilogx(ax2, freq, P1, 'Color', chanColor, 'DisplayName', chanLabel);
+                        end
+                        legendLabels2{end+1} = chanLabel;
+
+                    case 'psd'
+                        [cumRms, freq, totalRms] = SignalProcessor.ComputeCumulativeRMS(sig, sampleRate);
+                        label = sprintf('%s (RMS=%.4f)', chanLabel, totalRms);
+                        % 跳过 DC(0 Hz)，自适应横轴
+                        if freq(1) == 0
+                            semilogx(ax2, freq(2:end), cumRms(2:end), 'Color', chanColor, 'DisplayName', label);
+                        else
+                            semilogx(ax2, freq, cumRms, 'Color', chanColor, 'DisplayName', label);
+                        end
+                        legendLabels2{end+1} = label;
+                end
+            end
+
+            hold(ax1, 'off');
+            hold(ax2, 'off');
+
+            xlabel(ax1, 'Sample Index');
+            ylabel(ax1, 'Amplitude');
+            title(ax1, 'Time Domain Signal');
+            grid(ax1, 'on');
+            if ~isempty(legendLabels1)
+                legend(ax1, legendLabels1{:}, 'Location', 'best', 'Interpreter', 'none');
+            end
+
+            xlabel(ax2, 'Frequency (Hz)');
+            switch lower(analysisType)
+                case 'fft'
+                    ylabel(ax2, 'Amplitude');
+                    title(ax2, 'FFT Single-Sided Amplitude Spectrum');
+                case 'psd'
+                    ylabel(ax2, 'Cumulative RMS');
+                    title(ax2, 'Cumulative RMS (from PSD)');
+            end
+            grid(ax2, 'on');
+            set(ax2, 'XScale', 'log');
+            if ~isempty(legendLabels2)
+                legend(ax2, legendLabels2{:}, 'Location', 'best', 'Interpreter', 'none');
+            end
         end
     end
 end

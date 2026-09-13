@@ -55,20 +55,49 @@ classdef FileExplorer
         %
         % 输入：
         %   startPath  - char 起始目录
-        %   filterSpec - char 文件过滤器，如 'Data Files (*.dat;*.csv)|*.dat;*.csv'
+        %   filterSpec - cell 文件过滤器，如 {'*.dat;*.csv', 'Data Files (*.dat;*.csv)'}
         %
         % 输出：
         %   fileName - char 选中的文件名（不含路径）
         %   filePath - char 选中的文件完整路径
 
             if nargin < 2 || isempty(filterSpec)
-                filterSpec = 'All Files (*.*)|*.*';
+                filterSpec = {'*.*', 'All Files (*.*)'};
             end
 
-            [fileName, filePath] = uigetfile(filterSpec, 'Select File', startPath);
+            [fileName, pathName] = uigetfile(filterSpec, 'Select File', startPath);
             if isequal(fileName, 0)
                 fileName = '';
                 filePath = '';
+            else
+                filePath = fullfile(pathName, fileName);
+            end
+        end
+
+        function [fileNames, filePaths] = SelectFiles(startPath, filterSpec)
+        % SelectFiles 弹出多文件选择对话框
+        %
+        % 输入：
+        %   startPath  - char 起始目录
+        %   filterSpec - cell 文件过滤器
+        %
+        % 输出：
+        %   fileNames - cell 选中的文件名列表
+        %   filePaths - cell 选中的文件完整路径列表
+
+            if nargin < 2 || isempty(filterSpec)
+                filterSpec = {'*.*', 'All Files (*.*)'};
+            end
+
+            [fileNames, pathName] = uigetfile(filterSpec, 'Select Files', startPath, 'MultiSelect', 'on');
+            if isequal(fileNames, 0)
+                fileNames = {};
+                filePaths = {};
+            elseif ischar(fileNames)
+                fileNames = {fileNames};
+                filePaths = {fullfile(pathName, fileNames{1})};
+            else
+                filePaths = cellfun(@(f) fullfile(pathName, f), fileNames, 'UniformOutput', false);
             end
         end
 

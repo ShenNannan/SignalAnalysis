@@ -14,73 +14,46 @@ classdef AnalysisEngine < handle
             obj.PlotCtrl = plotCtrl;
         end
 
-        function RunAnalysis(obj, axesIdx, analysisType)
-        % RunAnalysis 对 axes 的所有通道执行分析并叠加显示
+        function RunAnalysis(obj, axesIdx, ~)
+        % RunAnalysis 对 axes 的所有通道绘制时域波形
 
             chans = obj.Session.GetAxesChannels(axesIdx);
             if isempty(chans)
                 return;
             end
 
-            % 清除旧图
             obj.PlotCtrl.ClearAxes(axesIdx);
 
-            % 获取选区
-            range = obj.Session.SelectionRange;
-
-            % 颜色循环
             colors = {'b', 'r', 'g', 'c', 'm', 'k'};
 
-            % 遍历所有通道叠加
             hold(obj.PlotCtrl.GetAxesHandle(axesIdx), 'on');
             for c = 1:length(chans)
                 chan = chans{c};
                 signal = chan.Data;
-                datasetIdx = chan.DatasetIdx;
-                ds = obj.Session.GetDataset(datasetIdx);
-                sampleTime = ds.SampleTime;
-                sampleRate = ds.SampleRate;
 
-                % 应用通道独立切片（优先）或全局选区
+                % 应用通道独立切片（优先）或全信号，支持环形缓冲
                 if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
                     startRow = chan.SliceRange(1);
                     endRow = chan.SliceRange(2);
                 else
-                    startRow = max(1, range(1));
-                    endRow = min(length(signal), range(2));
+                    startRow = 1;
+                    endRow = length(signal);
                 end
-                startRow = max(1, startRow);
-                endRow = min(length(signal), endRow);
-                sig = signal(startRow:endRow);
-                sampleIdx = (startRow:endRow)';
+                nSig = length(signal);
+                startRow = max(1, min(startRow, nSig));
+                if endRow <= nSig
+                    sig = signal(startRow:endRow);
+                else
+                    tail = signal(startRow:nSig);
+                    head = signal(1:endRow - nSig);
+                    sig = [tail; head];
+                end
+                sampleIdx = (0:length(sig)-1)';
                 colorIdx = mod(c-1, length(colors)) + 1;
                 chanColor = colors{colorIdx};
 
-                switch lower(analysisType)
-                    case 'time'
-                        obj.PlotCtrl.PlotTimeSeries(axesIdx, sampleIdx, sig, ...
-                            'DisplayName', chan.Label, 'Color', chanColor);
-
-                    case 'fft'
-                        result = SignalProcessor.ComputeFFT(sig, sampleTime);
-                        obj.PlotCtrl.PlotFFT(axesIdx, result, ...
-                            'DisplayName', chan.Label, 'Color', chanColor);
-
-                    case 'psd'
-                        result = SignalProcessor.ComputePSD(sig, sampleRate);
-                        obj.PlotCtrl.PlotPSD(axesIdx, result, ...
-                            'DisplayName', chan.Label, 'Color', chanColor);
-
-                    case 'integral'
-                        integrated = SignalProcessor.IntegrateSignal(sig, sampleTime);
-                        obj.PlotCtrl.PlotTimeSeries(axesIdx, sampleIdx, integrated, ...
-                            'DisplayName', [chan.Label ' Integral'], 'Color', chanColor);
-
-                    case 'madsd'
-                        madsd = SignalProcessor.ComputeMadsd(sig, sampleTime);
-                        obj.PlotCtrl.SetTitle(axesIdx, ...
-                            sprintf('%s MADSD = %.4f', chan.Label, madsd));
-                end
+                obj.PlotCtrl.PlotTimeSeries(axesIdx, sampleIdx, sig, ...
+                    'DisplayName', chan.Label, 'Color', chanColor);
             end
             hold(obj.PlotCtrl.GetAxesHandle(axesIdx), 'off');
 
@@ -103,6 +76,12 @@ classdef AnalysisEngine < handle
                     set(leg, 'Interpreter', 'none');
                 end
             end
+
+            % 重绘后恢复归一化
+            obj.ApplyNormalization(axesIdx);
+
+            % 重新链接有数据的 axes
+            obj.PlotCtrl.LinkAllAxes();
         end
 
         function RefreshAxes(obj, axesIdx)
@@ -110,20 +89,38 @@ classdef AnalysisEngine < handle
 
             chans = obj.Session.GetAxesChannels(axesIdx);
             if ~isempty(chans)
-                % 用当前显示的分析类型重跑（默认 time）
-                obj.RunAnalysis(axesIdx, 'time');
+                analysisType = obj.Session.GetAxesAnalysisType(axesIdx);
+                obj.RunAnalysis(axesIdx, analysisType);
             end
         end
 
         function RefreshAll(obj)
         % RefreshAll 刷新所有 axes
 
-            for i = 1:length(obj.Session.AxesData_)
+            for i = 1:obj.Session.AxesSlotCount
                 chans = obj.Session.GetAxesChannels(i);
                 if ~isempty(chans)
                     obj.RefreshAxes(i);
                 end
             end
+        end
+    end
+
+    methods (Access = private)
+        function ApplyNormalization(obj, axesIdx)
+        % ApplyNormalization 重绘后恢复归一化（读取 SessionData 中存储的参数）
+
+            normMode = obj.Session.GetAxesNormMode(axesIdx);
+            if strcmpi(normMode, 'none')
+                return;
+            end
+
+            normParams = obj.Session.GetAxesNormParams(axesIdx);
+            if ~isfield(normParams, 'channelStats') || isempty(normParams.channelStats)
+                return;
+            end
+
+            obj.PlotCtrl.NormalizeAxes(axesIdx, normMode, normParams);
         end
     end
 end

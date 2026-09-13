@@ -65,9 +65,9 @@ classdef Dataset < handle
                 obj.ColumnNames = colNames;
             end
 
-            % L1: 采样率（可选，默认 1Hz）
+            % L1: 采样率（可选，空表示未设置）
             if isempty(sampleRate)
-                obj.SampleRate = 1;
+                obj.SampleRate = [];
             else
                 validateattributes(sampleRate, {'numeric'}, {'positive', 'scalar'});
                 obj.SampleRate = sampleRate;
@@ -172,7 +172,11 @@ classdef Dataset < handle
 
         % Dependent properties
         function ts = get.SampleTime(obj)
-            ts = 1 / obj.SampleRate;
+            if isempty(obj.SampleRate)
+                ts = [];
+            else
+                ts = 1 / obj.SampleRate;
+            end
         end
 
         function n = get.RowCount(obj)
@@ -184,11 +188,19 @@ classdef Dataset < handle
         end
 
         function t = get.TimeVector(obj)
-            t = (0:obj.RowCount-1)' * obj.SampleTime;
+            if isempty(obj.SampleTime)
+                t = [];
+            else
+                t = (0:obj.RowCount-1)' * obj.SampleTime;
+            end
         end
 
         function d = get.Duration(obj)
-            d = obj.RowCount * obj.SampleTime;
+            if isempty(obj.SampleTime)
+                d = [];
+            else
+                d = obj.RowCount * obj.SampleTime;
+            end
         end
     end
 end

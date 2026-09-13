@@ -1,8 +1,8 @@
 classdef PlotController < handle
 % PlotController - 统一绘图控制
 %
-% 替代28个重复回调。支持动态 axes 数量。
-% 所有 PlotXxx 方法的 varargin 直接透传给底层 plot/semilogx。
+% 支持动态 axes 数量，所有 PlotXxx 方法透传给底层 plot/semilogx。
+% 交互功能使用 MATLAB 官方工具：datacursormode、zoom、pan、linkaxes。
 
     properties (SetAccess = private)
         ParentFigure    % Figure handle
@@ -11,6 +11,7 @@ classdef PlotController < handle
         AxesCount_      double  % 当前 axes 数量
         MaxAxes_        double  % axes 数量上限
         LayoutMode_     char    % 当前布局模式
+        StatusBar_              % 状态栏 text handle
     end
 
     methods
@@ -34,10 +35,18 @@ classdef PlotController < handle
             obj.AxesCount_ = 0;
             obj.AxesHandles_ = {};
             obj.LayoutMode_ = 'single';
+            obj.StatusBar_ = [];
         end
 
-        function idx = AddAxes(obj)
+        function idx = AddAxes(obj, buttonDownFcn)
         % AddAxes 新增 axes，返回索引
+        %
+        % 输入：
+        %   buttonDownFcn - axes ButtonDownFcn 回调，可选
+
+            if nargin < 2
+                buttonDownFcn = [];
+            end
 
             if obj.AxesCount_ >= obj.MaxAxes_
                 error('SignalAnalysis:PlotController:AxesLimitReached', ...
@@ -50,6 +59,14 @@ classdef PlotController < handle
             % 创建 axes 在容器内
             ax = axes('Parent', obj.AxesContainer, 'Visible', 'on');
 
+            % 官方 axes 工具栏（放大/缩小/平移/数据提示/还原视图）
+            axtoolbar(ax, {'zoomin', 'zoomout', 'pan', 'datacursor', 'restoreview'});
+
+            % 设置 axes 点击回调（选中 axes）
+            if ~isempty(buttonDownFcn)
+                set(ax, 'ButtonDownFcn', buttonDownFcn);
+            end
+
             % 扩展 handles
             while length(obj.AxesHandles_) < idx
                 obj.AxesHandles_{end+1} = []; %#ok<AGROW>
@@ -58,17 +75,9 @@ classdef PlotController < handle
 
             % 重新布局
             obj.Relayout(obj.LayoutMode_);
-        end
 
-        function SetAxesClickCallback(obj, axesIdx, callback)
-        % SetAxesClickCallback 设置 axes 点击回调（用于聚焦切换）
-
-            ax = obj.GetAxesHandle(axesIdx);
-            if ~isempty(ax) && isvalid(ax)
-                set(ax, 'ButtonDownFcn', callback);
-                % 使 axes 可点击
-                set(ax, 'PickableParts', 'all', 'HitTest', 'on');
-            end
+            % 同步 X 轴
+            obj.LinkAllAxes();
         end
 
         function RemoveAxes(obj, axesIdx)
@@ -88,6 +97,26 @@ classdef PlotController < handle
             % 重新布局
             if obj.AxesCount_ > 0
                 obj.Relayout(obj.LayoutMode_);
+                obj.LinkAllAxes();
+            end
+        end
+
+        function LinkAllAxes(obj)
+        % LinkAllAxes 同步有数据的 axes 的 X 轴（缩放/平移联动）
+        % 只链接包含 line 对象的 axes，避免空 axes 混淆轴范围
+
+            handles = {};
+            for i = 1:obj.AxesCount_
+                ax = obj.AxesHandles_{i};
+                if ~isempty(ax) && isvalid(ax)
+                    lines = findobj(ax, 'Type', 'line');
+                    if ~isempty(lines)
+                        handles{end+1} = ax; %#ok<AGROW>
+                    end
+                end
+            end
+            if length(handles) >= 2
+                linkaxes([handles{:}], 'x');
             end
         end
 
@@ -120,77 +149,24 @@ classdef PlotController < handle
             if isempty(ax) || ~isvalid(ax), return; end
 
             plot(ax, time, signal, varargin{:});
-            xlabel(ax, 'Sample Index');
             ylabel(ax, 'Amplitude');
             grid(ax, 'on');
-        end
-
-        function PlotFFT(obj, axesIdx, fftResult, varargin)
-        % PlotFFT 幅频曲线 semilogx
-
-            ax = obj.GetAxesHandle(axesIdx);
-            if isempty(ax) || ~isvalid(ax), return; end
-
-            semilogx(ax, fftResult.Frequency, fftResult.Amplitude, varargin{:});
-            xlabel(ax, 'Frequency (Hz)');
-            ylabel(ax, 'Amplitude');
-            grid(ax, 'on');
-        end
-
-        function PlotPSD(obj, axesIdx, psdResult, varargin)
-        % PlotPSD 功率谱 semilogx
-
-            ax = obj.GetAxesHandle(axesIdx);
-            if isempty(ax) || ~isvalid(ax), return; end
-
-            semilogx(ax, psdResult.Frequency, 10*log10(psdResult.Power), varargin{:});
-            xlabel(ax, 'Frequency (Hz)');
-            ylabel(ax, 'Power/Frequency (dB/Hz)');
-            grid(ax, 'on');
-        end
-
-        function PlotBode(obj, axesIdx, freq, amp, phase)
-        % PlotBode Bode 双子图
-
-            ax = obj.GetAxesHandle(axesIdx);
-            if isempty(ax) || ~isvalid(ax), return; end
-
-            semilogx(ax, freq, amp);
-            xlabel(ax, 'Frequency (Hz)');
-            ylabel(ax, 'Magnitude (dB)');
-            grid(ax, 'on');
-
-            ax2 = obj.GetAxesHandle(axesIdx + 1);
-            if ~isempty(ax2) && isvalid(ax2)
-                semilogx(ax2, freq, phase);
-                xlabel(ax2, 'Frequency (Hz)');
-                ylabel(ax2, 'Phase (deg)');
-                grid(ax2, 'on');
-            end
-        end
-
-        function PlotNyquist(obj, axesIdx, realPart, imagPart)
-        % PlotNyquist Nyquist 图
-
-            ax = obj.GetAxesHandle(axesIdx);
-            if isempty(ax) || ~isvalid(ax), return; end
-
-            plot(ax, realPart, imagPart, 'b-', ...
-                realPart, -imagPart, 'b--', 'LineWidth', 0.5);
-            hold(ax, 'on');
-            plot(ax, -1, 0, 'r+', 'MarkerSize', 10, 'LineWidth', 2);
-            hold(ax, 'off');
-            xlabel(ax, 'Real');
-            ylabel(ax, 'Imaginary');
-            grid(ax, 'on');
-            axis(ax, 'equal');
+            % xlabel 由 Relayout 统一管理（仅底部 axes 显示）
+            obj.Relayout(obj.LayoutMode_);
         end
 
         function ClearAxes(obj, axesIdx)
-        % ClearAxes 清除指定 axes
+        % ClearAxes 清除指定 axes（含关联 legend）
 
             ax = obj.GetAxesHandle(axesIdx);
             if ~isempty(ax) && isvalid(ax)
+                % legend 是 AxesContainer 的子对象，不是 axes 的子对象
+                allLegs = findobj(obj.AxesContainer, 'Type', 'legend');
+                for k = 1:length(allLegs)
+                    if isequal(get(allLegs(k), 'Axes'), ax)
+                        delete(allLegs(k));
+                    end
+                end
                 cla(ax);
             end
         end
@@ -200,24 +176,6 @@ classdef PlotController < handle
 
             for i = 1:obj.AxesCount_
                 obj.ClearAxes(i);
-            end
-        end
-
-        function SetXLimits(obj, axesIdx, range)
-        % SetXLimits 设置 X 轴范围
-
-            ax = obj.GetAxesHandle(axesIdx);
-            if ~isempty(ax) && isvalid(ax)
-                xlim(ax, range);
-            end
-        end
-
-        function SetTitle(obj, axesIdx, titleStr)
-        % SetTitle 设置标题
-
-            ax = obj.GetAxesHandle(axesIdx);
-            if ~isempty(ax) && isvalid(ax)
-                title(ax, titleStr);
             end
         end
 
@@ -231,113 +189,121 @@ classdef PlotController < handle
                 if ~isempty(srcAx) && isvalid(srcAx)
                     ax = subplot(n, 1, i, 'Parent', fig);
                     copyobj(allchild(srcAx), ax);
-                    xlabel(ax, get(get(srcAx, 'XLabel'), 'String'));
                     ylabel(ax, get(get(srcAx, 'YLabel'), 'String'));
                     title(ax, get(get(srcAx, 'Title'), 'String'));
                     grid(ax, 'on');
+                    if i == n
+                        xlabel(ax, 'Sample Index');
+                    end
                 end
             end
+            % 启用 datacursormode 和 axes 工具栏
+            dcm = datacursormode(fig);
+            set(dcm, 'SnapToDataVertex', 'on', 'Enable', 'on');
+            set(dcm, 'UpdateFcn', @obj.FormatDataTip);
         end
 
-        function HighlightRange(obj, axesIdx, startVal, stopVal, color)
-        % HighlightRange 高亮选区
-
-            if nargin < 5
-                color = 'r';
-            end
-
-            ax = obj.GetAxesHandle(axesIdx);
-            if isempty(ax) || ~isvalid(ax), return; end
-
-            hold(ax, 'on');
-            yl = ylim(ax);
-            plot(ax, [startVal startVal], yl, [color '-'], 'LineWidth', 1.5);
-            plot(ax, [stopVal stopVal], yl, [color '-'], 'LineWidth', 1.5);
-            hold(ax, 'off');
-        end
-
-        function NormalizeAxes(obj, axesIdx, normMode, session)
-        % NormalizeAxes 以当前 XLim 为参考窗口，对 axes 上所有通道做纵轴归一化
+        function NormalizeAxes(obj, axesIdx, normMode, normParams)
+        % NormalizeAxes 对 axes 上所有通道做纵轴归一化（使用预计算参数）
         %
         % 输入：
-        %   axesIdx  - axes 索引
-        %   normMode - 'none'|'minmax'|'zscore'|'meanzero'
-        %   session  - SessionData 引用，用于获取通道数据
+        %   axesIdx   - axes 索引
+        %   normMode  - 'none'|'minmax'|'zscore'|'meanzero'
+        %   normParams - struct，含 channelStats {1xN cell}，每项含 minY/maxY/meanY/stdY
 
             ax = obj.GetAxesHandle(axesIdx);
             if isempty(ax) || ~isvalid(ax), return; end
             if strcmpi(normMode, 'none')
                 return;
             end
-
-            % 获取当前 XLim → 行号范围
-            xl = xlim(ax);
-            refStart = max(1, round(xl(1)));
-            refEnd = round(xl(2));
+            if ~isfield(normParams, 'channelStats') || isempty(normParams.channelStats)
+                return;
+            end
 
             % 获取 axes 上所有 line 对象
             lines = findobj(ax, 'Type', 'line');
             if isempty(lines), return; end
-
-            % 需要从 session 获取每个通道的原始数据来计算参考参数
-            chans = session.GetAxesChannels(axesIdx);
-            if isempty(chans), return; end
-
-            % lines 是倒序的（最新画的在前面），需要反转
             lines = flipud(lines);
 
-            for i = 1:min(length(lines), length(chans))
-                chan = chans{i};
-                signal = chan.Data;
-
-                % 参考窗口范围（在原始数据坐标中）
-                totalLen = length(signal);
-                if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
-                    sliceStart = chan.SliceRange(1);
-                else
-                    sliceStart = 1;
-                end
-
-                % XLim 中的样本索引 → 信号内位置
-                refStartLocal = max(1, refStart - sliceStart + 1);
-                refEndLocal = min(totalLen, refEnd - sliceStart + 1);
-                if refStartLocal >= refEndLocal
-                    refStartLocal = 1;
-                    refEndLocal = length(signal);
-                end
-
-                refSig = signal(refStartLocal:refEndLocal);
-
-                % 获取当前显示的 YData
+            nApply = min(length(lines), length(normParams.channelStats));
+            for i = 1:nApply
+                stats = normParams.channelStats{i};
                 yData = get(lines(i), 'YData');
                 if isempty(yData), continue; end
 
                 switch lower(normMode)
                     case 'minmax'
-                        minY = min(refSig);
-                        maxY = max(refSig);
-                        if maxY - minY > 0
-                            yData = (yData - minY) / (maxY - minY);
+                        if stats.maxY - stats.minY > 0
+                            yData = (yData - stats.minY) / (stats.maxY - stats.minY);
                         end
                     case 'zscore'
-                        meanY = mean(refSig);
-                        stdY = std(refSig);
-                        if stdY > 0
-                            yData = (yData - meanY) / stdY;
+                        if stats.stdY > 0
+                            yData = (yData - stats.meanY) / stats.stdY;
                         end
                     case 'meanzero'
-                        meanY = mean(refSig);
-                        yData = yData - meanY;
+                        yData = yData - stats.meanY;
                 end
 
                 set(lines(i), 'YData', yData);
             end
         end
 
+        function SetupDataCursor(obj)
+        % SetupDataCursor 初始化 MATLAB 内置 datacursormode
+        % 自动处理点击创建 datatip、吸附数据点、拖拽、缩放联动
+
+            dcm = datacursormode(obj.ParentFigure);
+            set(dcm, 'SnapToDataVertex', 'on', 'Enable', 'off');
+            set(dcm, 'UpdateFcn', @obj.FormatDataTip);
+        end
+
+        function txt = FormatDataTip(~, ~, event)
+        % FormatDataTip 自定义数据提示显示格式
+
+            pos = event.Position;
+            txt = sprintf('X = %.6g\nY = %.6g', pos(1), pos(2));
+        end
+
+        function InitStatusBar(obj)
+        % InitStatusBar 在 figure 底部创建状态栏文本
+
+            obj.StatusBar_ = uicontrol(obj.ParentFigure, ...
+                'Style', 'text', ...
+                'Units', 'normalized', ...
+                'Position', [0, 0, 1, 0.03], ...
+                'HorizontalAlignment', 'left', ...
+                'FontSize', 9, ...
+                'String', ' ', ...
+                'Enable', 'inactive', ...
+                'BackgroundColor', [0.94 0.94 0.94]);
+        end
+
+        function UpdateStatusBar(obj, xVal, yVal, axesIdx)
+        % UpdateStatusBar 更新状态栏显示坐标
+
+            if isempty(obj.StatusBar_) || ~isvalid(obj.StatusBar_), return; end
+            if nargin < 4, axesIdx = 0; end
+
+            if axesIdx > 0
+                txt = sprintf('  Axes %d  |  X = %.6g  |  Y = %.6g', axesIdx, xVal, yVal);
+            else
+                txt = ' ';
+            end
+            set(obj.StatusBar_, 'String', txt);
+        end
+
+        function ClearStatusBar(obj)
+        % ClearStatusBar 清空状态栏
+
+            if ~isempty(obj.StatusBar_) && isvalid(obj.StatusBar_)
+                set(obj.StatusBar_, 'String', ' ');
+            end
+        end
+
         function Relayout(obj, mode)
         % Relayout 布局切换
         %
-        % 模式：'single' | 'dual' | 'triple' | 'quad'
+        % 模式：'single' | 'dual'
         % 使用手动 Position 定位，兼容 uipanel 容器
 
             obj.LayoutMode_ = mode;
@@ -349,13 +315,7 @@ classdef PlotController < handle
 
             % 确定行列数
             switch lower(mode)
-                case 'single'
-                    nRows = n; nCols = 1;
                 case 'dual'
-                    nRows = ceil(n / 2); nCols = 2;
-                case 'triple'
-                    nRows = ceil(n / 3); nCols = 3;
-                case 'quad'
                     nRows = ceil(n / 2); nCols = 2;
                 otherwise
                     nRows = n; nCols = 1;
@@ -363,7 +323,7 @@ classdef PlotController < handle
 
             % 手动计算每个 axes 的位置（归一化坐标）
             marginX = 0.05;
-            marginY = 0.05;
+            marginY = 0.09;
             gapX = 0.02;
             gapY = 0.04;
 
@@ -371,6 +331,8 @@ classdef PlotController < handle
             totalH = 1 - 2*marginY - (nRows-1)*gapY;
             axW = totalW / nCols;
             axH = totalH / nRows;
+
+            lastRow = floor((n-1) / nCols);  % 最后一行的行号
 
             for i = 1:n
                 ax = obj.AxesHandles_{i};
@@ -383,6 +345,13 @@ classdef PlotController < handle
 
                     set(ax, 'Units', 'normalized', ...
                         'Position', [posX, posY, axW, axH]);
+
+                    % 只在最底部行显示 xlabel
+                    if row == lastRow
+                        xlabel(ax, 'Sample Index');
+                    else
+                        xlabel(ax, '');
+                    end
                 end
             end
         end
