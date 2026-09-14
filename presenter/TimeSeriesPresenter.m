@@ -1195,6 +1195,9 @@ classdef TimeSeriesPresenter < BasePresenter
             d = evt.Data;
             axIdx = d.axesIdx;
 
+            if isempty(obj.CursorXData_) || axIdx > numel(obj.CursorXData_)
+                return;
+            end
             xData = obj.CursorXData_{axIdx};
             if isempty(xData)
                 obj.View.HideCursor();

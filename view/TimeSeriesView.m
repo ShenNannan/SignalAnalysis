@@ -184,6 +184,14 @@ classdef TimeSeriesView < handle
             if ~isempty(ax) && isvalid(ax)
                 legend(ax, 'off');
                 cla(ax);
+                % 重建被 cla 删除的游标线
+                if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines') ...
+                        && axesIdx <= numel(obj.CursorMgr_.Lines)
+                    obj.CursorMgr_.Lines{axesIdx} = xline(ax, 0, ...
+                        'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
+                        'LineStyle', '-', 'HitTest', 'off', ...
+                        'PickableParts', 'none', 'Visible', 'off');
+                end
             end
         end
 
@@ -222,6 +230,15 @@ classdef TimeSeriesView < handle
             ax.LineStyleOrder = '-';
             ax.LineStyleOrderIndex = 1;
             ax.ColorOrderIndex = 1;
+
+            % 重建被 cla('reset') 删除的游标线
+            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines') ...
+                    && axIdx <= numel(obj.CursorMgr_.Lines)
+                obj.CursorMgr_.Lines{axIdx} = xline(ax, 0, ...
+                    'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
+                    'LineStyle', '-', 'HitTest', 'off', ...
+                    'PickableParts', 'none', 'Visible', 'off');
+            end
 
             if hasRightY
                 % ---- 双Y模式：用 yyaxis ----
@@ -343,6 +360,7 @@ classdef TimeSeriesView < handle
             if isempty(obj.CursorMgr_), return; end
             lines = obj.CursorMgr_.Lines;
             for i = 1:numel(lines)
+                if ~isgraphics(lines{i}), continue; end
                 if ismember(i, groupAxes)
                     lines{i}.Value = xVal;
                     lines{i}.Visible = 'on';
@@ -357,6 +375,7 @@ classdef TimeSeriesView < handle
             if isempty(obj.CursorMgr_), return; end
             lines = obj.CursorMgr_.Lines;
             for i = 1:numel(lines)
+                if ~isgraphics(lines{i}), continue; end
                 lines{i}.Visible = 'off';
             end
             if isfield(obj.CursorMgr_, 'InfoLabel') && ~isempty(obj.CursorMgr_.InfoLabel)
@@ -1114,6 +1133,7 @@ classdef TimeSeriesView < handle
 
         function onCursorMotion(obj)
         % onCursorMotion 全局鼠标移动：边界保护 + 节流 + 事件广播
+            if isempty(obj.CursorMgr_), return; end
             persistent lastT;
             if ~isempty(lastT) && toc(lastT) < 0.05, return; end
             lastT = tic;
