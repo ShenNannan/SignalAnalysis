@@ -773,7 +773,7 @@ classdef TimeSeriesPresenter < BasePresenter
 
                 switch lower(analysisType)
                     case 'fft'
-                        [P1, freq] = SignalProcessor.ComputeSpectrumWelch(sig, sampleRate);
+                        [P1, freq] = SignalProcessor.ComputeFFTSingleSided(sig, sampleRate);
                         if abs(freq(1)) < eps
                             semilogx(ax2, freq(2:end), P1(2:end), 'Color', chanColor, 'DisplayName', chanLabel);
                         else
@@ -801,13 +801,15 @@ classdef TimeSeriesPresenter < BasePresenter
             ylabel(ax1, 'Amplitude');
             title(ax1, 'Time Domain Signal');
             grid(ax1, 'on');
-            ax2.XScale = 'log'; ax2.YScale = 'log';
+            ax2.XScale = 'log';
             xlabel(ax2, 'Frequency (Hz)');
             grid(ax2, 'on');
             if strcmpi(analysisType, 'fft')
+                ax2.YScale = 'linear';
                 ylabel(ax2, 'Amplitude');
-                title(ax2, 'Spectrum (Welch PSD)');
+                title(ax2, 'Single-Sided Amplitude Spectrum');
             else
+                ax2.YScale = 'log';
                 ylabel(ax2, 'Cumulative RMS');
                 title(ax2, 'Cumulative RMS (from PSD)');
             end
