@@ -29,6 +29,34 @@ classdef SignalProcessor
             totalRms = cumRms(end);
         end
 
+        function [rmsAmp, f, totalRms] = ComputeRMSSpectrum(signal, sampleRate)
+        % ComputeRMSSpectrum 每频率 bin 的 RMS 幅值谱
+        %
+        % 基于 Welch PSD，sqrt(psd * df) 得到每 bin 的 RMS 贡献
+        % 非累积，可直接看到各频率的 RMS 大小
+        %
+        % 输出：
+        %   rmsAmp   - [K×1 double] 每 bin RMS 幅值 (线性单位)
+        %   f        - [K×1 double] 频率轴 Hz
+        %   totalRms - double 总 RMS = sqrt(sum(rmsAmp.^2))
+
+            signal = signal(:);
+            N = length(signal);
+            nfft = min(N, 2^nextpow2(max(256, floor(N/4))));
+            win = hann(nfft, 'periodic');
+            noverlap = round(nfft * 0.5);
+            try
+                [pxx, f] = pwelch(signal, win, noverlap, nfft, sampleRate);
+            catch
+                [pxx, f] = periodogram(signal, [], [], sampleRate);
+            end
+            df = f(2) - f(1);
+            rmsAmp = sqrt(pxx .* df);
+            rmsAmp = rmsAmp(:);
+            f = f(:);
+            totalRms = sqrt(sum(rmsAmp.^2));
+        end
+
         function [P1, f] = ComputeFFTSingleSided(signal, sampleRate)
         % ComputeFFTSingleSided 计算单边 FFT 幅值谱 (线性单位, 去均值, Hann 窗)
         %
