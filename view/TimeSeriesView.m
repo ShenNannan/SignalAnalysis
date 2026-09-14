@@ -850,7 +850,9 @@ classdef TimeSeriesView < handle
                 legend(ax, 'Interpreter', 'none', 'Location', 'northwest');
             end
         end
+    end
 
+    methods
         % ---- 弹窗工厂（Presenter 调用，View 负责 UI 创建） ----
 
         function h = CreateSpectrumPopup(obj)
