@@ -12,6 +12,8 @@ classdef TimeSeriesPresenter < BasePresenter
         Session         % SessionData
         StatusCallback  % function handle @(txt)
         LastFocusedAxes_ = 0  % 上次聚焦的 axes 索引（避免重复刷新通道表）
+        CursorMgr       % struct 游标管理器
+        CursorXData_    % cell {ax1_xData, ax2_xData, ...} 缓存
     end
 
     methods
@@ -45,7 +47,10 @@ classdef TimeSeriesPresenter < BasePresenter
             obj.TrackListener(addlistener(view, 'ClearXAxisClicked', @obj.OnClearXAxis));
             obj.TrackListener(addlistener(view, 'SetRightYAxisClicked', @obj.OnSetRightYAxis));
             obj.TrackListener(addlistener(view, 'ClearRightYAxisClicked', @obj.OnClearRightYAxis));
+            obj.TrackListener(addlistener(view, 'CursorMotion', @obj.OnCursorMotion));
 
+            obj.CursorXData_ = cell(1, 6);
+            obj.initCursor();
             obj.RefreshChannelTable();
         end
 
@@ -178,6 +183,9 @@ classdef TimeSeriesPresenter < BasePresenter
             else
                 xRaw = [];
             end
+
+            % 缓存 x-data 供游标寻址
+            obj.CursorXData_{axesIdx} = obj.buildXData(axesIdx, chans, xRaw, hasXChannel);
 
             % ---- 右Y通道识别（支持多个）----
             rightYRefs = obj.Session.GetRightYChannel(axesIdx);
@@ -409,6 +417,7 @@ classdef TimeSeriesPresenter < BasePresenter
             obj.View.ClearAllAxes();
             for a = 1:obj.Session.AxesSlotCount
                 obj.Session.ClearAxes(a);
+                obj.InvalidateCursorCache(a);
             end
             obj.SyncViewAxisState(obj.View.GetFocusedAxes());
             obj.RefreshChannelTable();
@@ -1171,6 +1180,107 @@ classdef TimeSeriesPresenter < BasePresenter
         function idx = ChannelColorIndex(~, datasetIdx, colIdx, nColors)
         % ChannelColorIndex 通道→颜色索引（基于 datasetIdx+colIdx 哈希，与序号无关）
             idx = mod((datasetIdx - 1) * 7 + colIdx, nColors) + 1;
+        end
+
+        % ---- 同步游标卡尺 ----
+
+        function initCursor(obj)
+        % initCursor 初始化游标管理器，注册鼠标回调
+            obj.CursorMgr = obj.View.InitCursorManager();
+            obj.View.RegisterCursorMotionFcn();
+        end
+
+        function OnCursorMotion(obj, ~, evt)
+        % OnCursorMotion 鼠标移动事件处理：二分查找 + 更新游标 + 回读数据
+            d = evt.Data;
+            axIdx = d.axesIdx;
+
+            xData = obj.CursorXData_{axIdx};
+            if isempty(xData)
+                obj.View.HideCursor();
+                return;
+            end
+
+            % 最近邻查找
+            [~, idx] = min(abs(xData - d.x));
+            realX = xData(idx);
+
+            % 获取同组 axes
+            groupAxes = obj.getXGroup(axIdx);
+
+            % 更新游标位置
+            obj.View.UpdateCursorPosition(axIdx, realX, groupAxes);
+
+            % 读取各通道值
+            readout = {};
+            for gAx = groupAxes
+                chans = obj.Session.GetAxesChannels(gAx);
+                for k = 1:length(chans)
+                    chanData = chans{k}.Data;
+                    if idx <= length(chanData)
+                        readout{end+1} = struct('Label', chans{k}.Label, 'Y', chanData(idx)); %#ok<AGROW>
+                    end
+                end
+            end
+            obj.UpdateCursorReadout(realX, readout);
+        end
+
+        function UpdateCursorReadout(obj, xVal, values)
+        % UpdateCursorReadout 更新游标读数面板
+            if isempty(obj.CursorMgr) || ~isfield(obj.CursorMgr, 'InfoLabel')
+                return;
+            end
+            lines = cell(1, length(values)+1);
+            lines{1} = sprintf('游标: %.6g', xVal);
+            for k = 1:length(values)
+                lines{k+1} = sprintf('%s: %.6g', values{k}.Label, values{k}.Y);
+            end
+            obj.CursorMgr.InfoLabel.Text = strjoin(lines, newline);
+        end
+
+        function InvalidateCursorCache(obj, axIdx)
+        % InvalidateCursorCache 使指定 axes 的 x-data 缓存失效
+            if axIdx >= 1 && axIdx <= numel(obj.CursorXData_)
+                obj.CursorXData_{axIdx} = [];
+            end
+        end
+
+        function xData = buildXData(obj, axesIdx, chans, xRaw, hasXChannel)
+        % buildXData 构建游标用 x-data 向量（基于第一个通道的切片范围）
+            if isempty(chans)
+                xData = [];
+                return;
+            end
+            chan = chans{1};
+            if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
+                sr = chan.SliceRange;
+                if hasXChannel
+                    xData = ChannelOperations.ApplySlice(xRaw, sr(1), sr(2));
+                else
+                    n = sr(2) - sr(1) + 1;
+                    xData = (0:n-1)';
+                end
+            else
+                if hasXChannel
+                    n = min(length(xRaw), length(chan.Data));
+                    xData = xRaw(1:n);
+                else
+                    xData = (0:length(chan.Data)-1)';
+                end
+            end
+        end
+
+        function groupAxes = getXGroup(obj, axIdx)
+        % getXGroup 获取与指定 axes 共享 X-channel 的同组 axes
+            [xDsIdx, xColIdx] = obj.Session.GetXChannel(axIdx);
+            groupAxes = axIdx;
+            for i = 1:obj.Session.AxesCount
+                if i == axIdx, continue; end
+                [dsIdx, colIdx] = obj.Session.GetXChannel(i);
+                if isequal(xDsIdx, dsIdx) && isequal(xColIdx, colIdx)
+                    groupAxes = [groupAxes, i]; %#ok<AGROW>
+                end
+            end
         end
 
     end

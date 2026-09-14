@@ -16,6 +16,7 @@ classdef TimeSeriesView < handle
         SpectrumDropdown
         NormDropdown    % uidropdown 归一化模式
         LoadingDlg_     % uiprogressdlg
+        CursorMgr_      % struct 游标管理器 .Lines{axIdx}, .InfoLabel, .Fig
     end
 
     properties (Access = private)
@@ -49,6 +50,7 @@ classdef TimeSeriesView < handle
         SetSampleRateClicked    % 载荷 struct('datasetIdx',..)
         ClearPlotClicked
         SpectrumClicked
+        CursorMotion            % 载荷 struct('axesIdx', 'x')
         NormClicked             % 载荷 struct('mode',..)
         CalcClicked
         AxesClicked             % 载荷 struct('axesIdx',..,'x',..,'y',..)
@@ -316,6 +318,59 @@ classdef TimeSeriesView < handle
         function ShowInfo(obj, msg)
             uialert(ancestor(obj.Grid_, 'figure'), msg, '提示', 'Icon', 'success');
         end
+
+        % ---- 同步游标卡尺 ----
+
+        function mgr = InitCursorManager(obj, infoLabel)
+        % InitCursorManager 创建同步游标 xline（仅为已存在的 axes）
+            lineOpts = {'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
+                        'LineStyle', '-', 'HitTest', 'off', ...
+                        'PickableParts', 'none', 'Visible', 'off'};
+            lines = cell(1, obj.AxesCount_);
+            for i = 1:obj.AxesCount_
+                lines{i} = xline(obj.AxesHandles_{i}, 0, lineOpts{:});
+            end
+            if nargin < 2 || isempty(infoLabel)
+                mgr = struct('Lines', {lines});
+            else
+                mgr = struct('Lines', {lines}, 'InfoLabel', infoLabel);
+            end
+            obj.CursorMgr_ = mgr;
+        end
+
+        function UpdateCursorPosition(obj, axesIdx, xVal, groupAxes)
+        % UpdateCursorPosition 更新游标位置，仅显示同组 axes
+            if isempty(obj.CursorMgr_), return; end
+            lines = obj.CursorMgr_.Lines;
+            for i = 1:numel(lines)
+                if ismember(i, groupAxes)
+                    lines{i}.Value = xVal;
+                    lines{i}.Visible = 'on';
+                else
+                    lines{i}.Visible = 'off';
+                end
+            end
+        end
+
+        function HideCursor(obj)
+        % HideCursor 隐藏所有游标线
+            if isempty(obj.CursorMgr_), return; end
+            lines = obj.CursorMgr_.Lines;
+            for i = 1:numel(lines)
+                lines{i}.Visible = 'off';
+            end
+            if isfield(obj.CursorMgr_, 'InfoLabel') && ~isempty(obj.CursorMgr_.InfoLabel)
+                obj.CursorMgr_.InfoLabel.Text = '游标: --';
+            end
+        end
+
+        function RegisterCursorMotionFcn(obj)
+        % RegisterCursorMotionFcn 注册全局鼠标移动回调（保留已有回调）
+            fig = ancestor(obj.Grid_, 'figure');
+            if isempty(fig), return; end
+            oldFcn = fig.WindowButtonMotionFcn;
+            fig.WindowButtonMotionFcn = @(s, e) obj.onCursorMotionWrapper(oldFcn);
+        end
     end
 
     methods (Access = private)
@@ -450,6 +505,13 @@ classdef TimeSeriesView < handle
             idx = obj.AxesCount_;
             ax.ButtonDownFcn = @(s, e) obj.OnAxesButtonDown(idx, e);
             obj.AxesHandles_{end+1} = ax;
+            % 为新 axes 添加游标线
+            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines')
+                obj.CursorMgr_.Lines{end+1} = xline(ax, 0, ...
+                    'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
+                    'LineStyle', '-', 'HitTest', 'off', ...
+                    'PickableParts', 'none', 'Visible', 'off');
+            end
             obj.RelayoutGrid();
             obj.LinkXAxes();
         end
@@ -464,6 +526,11 @@ classdef TimeSeriesView < handle
             obj.AxesHandles_(end) = [];
             if ~isempty(obj.AxesXChannelMap_) && length(obj.AxesXChannelMap_) >= obj.AxesCount_ + 1
                 obj.AxesXChannelMap_(end) = [];
+            end
+            % 移除对应的游标线
+            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines') ...
+                    && numel(obj.CursorMgr_.Lines) > obj.AxesCount_
+                obj.CursorMgr_.Lines(end) = [];
             end
             obj.FocusedAxes_ = min(obj.FocusedAxes_, obj.AxesCount_);
             obj.RelayoutGrid();
@@ -1033,6 +1100,36 @@ classdef TimeSeriesView < handle
         % 输出 h：figure 句柄，Presenter 负责 subplot/plot 内容
 
             h = figure('Name', name, 'NumberTitle', 'off');
+        end
+
+        % ---- 游标鼠标回调 ----
+
+        function onCursorMotionWrapper(obj, oldFcn)
+        % onCursorMotionWrapper 保留旧回调 + 游标移动
+            if ~isempty(oldFcn)
+                try oldFcn(); catch, end
+            end
+            obj.onCursorMotion();
+        end
+
+        function onCursorMotion(obj)
+        % onCursorMotion 全局鼠标移动：边界保护 + 节流 + 事件广播
+            persistent lastT;
+            if ~isempty(lastT) && toc(lastT) < 0.05, return; end
+            lastT = tic;
+
+            for i = 1:obj.AxesCount_
+                ax = obj.AxesHandles_{i};
+                cp = ax.CurrentPoint;
+                xl = xlim(ax); yl = ylim(ax);
+                if cp(1,1) >= xl(1) && cp(1,1) <= xl(2) && ...
+                   cp(1,2) >= yl(1) && cp(1,2) <= yl(2)
+                    notify(obj, 'CursorMotion', ...
+                        AppEventData(struct('axesIdx', i, 'x', cp(1,1))));
+                    return;
+                end
+            end
+            obj.HideCursor();
         end
     end
 end
