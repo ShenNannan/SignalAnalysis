@@ -575,10 +575,18 @@ classdef DataReaderFactory
 
         function tf = IsGeneratedFile(filePath)
         % IsGeneratedFile 判断是否为工具生成文件
+        %
+        % .mat 文件：检查同目录是否存在 companion _meta.json（而非文件名模式）
+        %   避免误杀用户创建的 *_standardized.mat
+        % 其他文件：按文件名后缀匹配
             [~, name, ext] = fileparts(filePath);
-            tf = strcmpi(ext, '.mat') && endsWith(name, '_standardized', 'IgnoreCase', true) ...
-              || strcmpi(ext, '.json') && endsWith(name, '_standardized_meta', 'IgnoreCase', true) ...
-              || strcmpi(ext, '.xlsx') && endsWith(name, '_review', 'IgnoreCase', true);
+            if strcmpi(ext, '.mat')
+                metaPath = fullfile(fileparts(filePath), [name '_meta.json']);
+                tf = exist(metaPath, 'file') > 0;
+            else
+                tf = strcmpi(ext, '.json') && endsWith(name, '_meta', 'IgnoreCase', true) ...
+                  || strcmpi(ext, '.xlsx') && endsWith(name, '_review', 'IgnoreCase', true);
+            end
         end
 
         function [files, warnings] = DiscoverDirectory(dirPath, extensions)
@@ -896,7 +904,7 @@ classdef DataReaderFactory
 
         function [results, allWarnings] = Import(rootDir, varargin)
         % Import 统一入口：给定任意目录，返回所有数据集
-            extensions = {'.dat', '.csv', '.txt', '.xlsx'};
+            extensions = {'.dat', '.csv', '.txt', '.xlsx', '.mat'};
             results = {};
             allWarnings = {};
 
@@ -1472,11 +1480,16 @@ classdef DataReaderFactory
         end
 
         function [data, columnNames, formatTag] = ParseMatFile(filePath)
-        % ParseMatFile .mat 格式：优先加载 sa_ 前缀变量
+        % ParseMatFile .mat 格式解析
+        %
+        % 优先级：
+        %   1. sa_data_matrix（标准化格式，直接使用）
+        %   2. 收集所有数值向量（≥2行），按长度分组，最长组合并
+        %   3. 单个数值矩阵 → 直接使用
 
             loaded = load(filePath);
 
-            % 优先检查 sa_ 前缀变量（标准化格式）
+            % 1. 标准化格式
             if isfield(loaded, 'sa_data_matrix')
                 data = loaded.sa_data_matrix;
                 columnNames = {};
@@ -1487,24 +1500,56 @@ classdef DataReaderFactory
                 return;
             end
 
-            % 否则取第一个数值矩阵
+            % 2. 收集数值向量（排除标量和非数值变量）
             fields = fieldnames(loaded);
-            data = [];
+            vecs = {};    % {struct('name',..., 'data',...), ...}
+            matrices = {};
             for i = 1:length(fields)
-                val = loaded.(fields{i});
-                if isnumeric(val) && ismatrix(val)
-                    data = double(val);
-                    break;
+                fname = fields{i};
+                val = loaded.(fname);
+                if ~isnumeric(val) || ~isreal(val), continue; end
+                val = double(val);
+                n = numel(val);
+                if n >= 2 && isvector(val)
+                    vecs{end+1} = struct('name', fname, 'data', val(:), 'len', n); %#ok<AGROW>
+                elseif ismatrix(val) && numel(val) >= 2
+                    matrices{end+1} = struct('name', fname, 'data', val); %#ok<AGROW>
                 end
             end
 
-            if isempty(data)
-                error('SignalAnalysis:DataReaderFactory:NoNumericData', ...
-                    'No numeric matrix found in .mat file');
+            % 按长度分组，取最长的组合并
+            if ~isempty(vecs)
+                lengths = cellfun(@(v) v.len, vecs);
+                maxLen = max(lengths);
+                longest = vecs(lengths == maxLen);
+
+                if length(longest) >= 1
+                    dataArrays = cellfun(@(v) v.data, longest, 'UniformOutput', false);
+                    data = cat(2, dataArrays{:});
+                    columnNames = cellfun(@(v) v.name, longest, 'UniformOutput', false);
+                    % 尝试从 sa_column_names 覆盖
+                    if isfield(loaded, 'sa_column_names') && iscell(loaded.sa_column_names)
+                        n = min(length(loaded.sa_column_names), size(data, 2));
+                        columnNames(1:n) = loaded.sa_column_names(1:n);
+                    end
+                    formatTag = 'mat';
+                    return;
+                end
             end
 
-            columnNames = {};
-            formatTag = 'mat';
+            % 3. 单个矩阵
+            if ~isempty(matrices)
+                data = matrices{1}.data;
+                columnNames = {};
+                if isfield(loaded, 'sa_column_names')
+                    columnNames = loaded.sa_column_names;
+                end
+                formatTag = 'mat';
+                return;
+            end
+
+            error('SignalAnalysis:DataReaderFactory:NoNumericData', ...
+                'No numeric data found in .mat file');
         end
 
         function [data, columnNames, formatTag] = ParseExcelFile(filePath)

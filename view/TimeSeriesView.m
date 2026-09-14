@@ -26,6 +26,13 @@ classdef TimeSeriesView < handle
         Renaming_       % logical 标志：重命名期间禁用展开/折叠
         RenameOriginal_ % char 重命名前的原始名称（用于判断是否变化）
         LastClickedRow_ % double 最近左键点击的行号（供右键菜单使用）
+        MenuSetXAxis_    % uimenu handle: 设为横轴
+        MenuClearXAxis_  % uimenu handle: 恢复默认横轴
+        MenuSetRightY_   % uimenu handle: 设为右Y轴
+        MenuClearRightY_ % uimenu handle: 恢复默认Y轴
+        CurXChannel_     % 当前聚焦 axes 的横轴引用 [datasetIdx, colIdx] 或 []
+        CurRightYChannel_ % 当前聚焦 axes 的右Y轴引用 [datasetIdx, colIdx] 或 []
+        AxesXChannelMap_  % 每个 axes 的横轴引用 cell array，用于 linkaxes 分组
     end
 
     events
@@ -51,6 +58,10 @@ classdef TimeSeriesView < handle
 
         SliceDialogClicked      % 载荷 struct('datasetIdx',..,'colIdx',..)
         SliceResetClicked       % 载荷 struct('datasetIdx',..,'colIdx',..)
+        SetXAxisClicked         % 载荷 struct('datasetIdx',..,'colIdx',..)
+        ClearXAxisClicked       % 载荷 struct('axesIdx',..)
+        SetRightYAxisClicked    % 载荷 struct('datasetIdx',..,'colIdx',..)
+        ClearRightYAxisClicked  % 载荷 struct('axesIdx',..)
     end
 
     methods
@@ -73,6 +84,9 @@ classdef TimeSeriesView < handle
             obj.RenameOriginal_ = '';
             obj.LastClickedRow_ = 0;
             obj.LoadingDlg_ = [];
+            obj.CurXChannel_ = [];
+            obj.CurRightYChannel_ = [];
+            obj.AxesXChannelMap_ = {};
 
             obj.BuildChannelPanel();
             obj.BuildPlotPanel();
@@ -105,11 +119,7 @@ classdef TimeSeriesView < handle
                 if r.isParent
                     checked{end+1} = r.checked; %#ok<AGROW>
                     dsIdx = r.datasetIdx;
-                    if obj.ExpandedSets_.isKey(dsIdx) && obj.ExpandedSets_(dsIdx)
-                        names{end+1} = ['▼ ' r.label]; %#ok<AGROW>
-                    else
-                        names{end+1} = ['▶ ' r.label]; %#ok<AGROW>
-                    end
+                    names{end+1} = r.label; %#ok<AGROW>
                     visMap(end+1) = i; %#ok<AGROW>
                 else
                     pIdx = r.parentIdx;
@@ -170,6 +180,7 @@ classdef TimeSeriesView < handle
         function ClearAxes(obj, axesIdx)
             ax = obj.GetAxes(axesIdx);
             if ~isempty(ax) && isvalid(ax)
+                legend(ax, 'off');
                 cla(ax);
             end
         end
@@ -178,34 +189,84 @@ classdef TimeSeriesView < handle
             for i = 1:obj.AxesCount_
                 obj.ClearAxes(i);
             end
+            obj.AxesXChannelMap_ = {};
+            obj.CurXChannel_ = [];
+            obj.CurRightYChannel_ = [];
         end
 
         % ---- 渲染接口 ----
 
-        function RenderWaveform(obj, axesIdx, xCell, yCell, labels, colors)
-        % RenderWaveform 在指定 axes 叠画多条通道
+        function RenderWaveform(obj, axesIdx, xCell, yCell, labels, colors, rightYData)
+        % RenderWaveform 在指定 axes 叠画多条通道（支持双Y轴）
+        % rightYData: [] 无右Y，或 struct('x',..,'y',..,'label',..,'color',..)
+            if nargin < 7
+                rightYData = [];
+            end
             ax = obj.GetAxes(axesIdx);
             if isempty(ax) || ~isvalid(ax)
                 return;
             end
-            cla(ax);
-            hold(ax, 'on');
-            for c = 1:numel(yCell)
-                % 图例只显示通道名（去掉 "数据集 / " 前缀）
-                [~, shortLabel] = strtok(labels{c}, '/');
-                if isempty(shortLabel)
-                    displayName = labels{c};
-                else
-                    displayName = strtrim(shortLabel(2:end));
-                end
-                plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'DisplayName', displayName);
-            end
-            hold(ax, 'off');
-            grid(ax, 'on');
-            ylabel(ax, 'Amplitude');
 
-            % legend 在隐藏页签内创建会得到空条目，统一走 RefreshLegendFor
-            obj.RefreshLegendFor(ax);
+            hasRightY = isstruct(rightYData) && isfield(rightYData, 'x') && ~isempty(rightYData.x);
+
+            % 保存交互属性（cla('reset') 会清除它们）
+            savedButtonDownFcn = ax.ButtonDownFcn;
+
+            % 彻底重置 axes（退出 yyaxis 结构 + 清除所有子对象）
+            cla(ax, 'reset');
+
+            % 恢复交互属性
+            ax.ButtonDownFcn = savedButtonDownFcn;
+            ax.LineStyleOrder = '-';
+            ax.LineStyleOrderIndex = 1;
+            ax.ColorOrderIndex = 1;
+
+            if hasRightY
+                % ---- 双Y模式：用 yyaxis ----
+                yyaxis(ax, 'left');
+                hold(ax, 'on');
+                allLines = gobjects(0);
+                for c = 1:numel(yCell)
+                    [~, shortLabel] = strtok(labels{c}, '/');
+                    if isempty(shortLabel), displayName = labels{c};
+                    else, displayName = strtrim(shortLabel(2:end)); end
+                    h = plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'LineWidth', 1, 'LineStyle', '-', 'DisplayName', displayName, 'Tag', 'leftY');
+                    allLines(end+1) = h;
+                end
+                hold(ax, 'off');
+
+                yyaxis(ax, 'right');
+                hold(ax, 'on');
+                for c = 1:numel(rightYData.x)
+                    h = plot(ax, rightYData.x{c}, rightYData.y{c}, ...
+                        'Color', rightYData.colors{c}, 'LineWidth', 1, 'LineStyle', '--', ...
+                        'DisplayName', rightYData.labels{c}, 'Tag', 'rightY');
+                    allLines(end+1) = h;
+                end
+                hold(ax, 'off');
+
+                yyaxis(ax, 'left');  % 固定活动侧
+            else
+                % ---- 普通模式 ----
+                hold(ax, 'on');
+                allLines = gobjects(0);
+                for c = 1:numel(yCell)
+                    [~, shortLabel] = strtok(labels{c}, '/');
+                    if isempty(shortLabel), displayName = labels{c};
+                    else, displayName = strtrim(shortLabel(2:end)); end
+                    h = plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'LineWidth', 1, 'LineStyle', '-', 'DisplayName', displayName);
+                    allLines(end+1) = h;
+                end
+                hold(ax, 'off');
+            end
+
+            grid(ax, 'on');
+
+            if numel(allLines) >= 2
+                legend(ax, allLines, 'Interpreter', 'none', 'Location', 'northwest');
+            elseif numel(allLines) == 1
+                legend(ax, 'off');
+            end
         end
 
         function RefreshLegends(obj)
@@ -214,6 +275,22 @@ classdef TimeSeriesView < handle
             for i = 1:obj.AxesCount_
                 obj.RefreshLegendFor(obj.AxesHandles_{i});
             end
+        end
+
+        function UpdateAxisChannelState(obj, axIdx, xDsIdx, xColIdx, rightYList)
+        % UpdateAxisChannelState 更新当前 axes 的横轴/右Y轴引用（供 Presenter 调用）
+        %   rightYList: cell array of [datasetIdx, colIdx]，支持多个右Y通道
+            if ~isempty(xDsIdx)
+                obj.CurXChannel_ = [xDsIdx, xColIdx];
+            else
+                obj.CurXChannel_ = [];
+            end
+            obj.CurRightYChannel_ = rightYList;  % cell array of [dsIdx, colIdx]
+            % 更新每轴 X 通道映射（用于 linkaxes 分组）
+            while length(obj.AxesXChannelMap_) < axIdx
+                obj.AxesXChannelMap_{end+1} = [];
+            end
+            obj.AxesXChannelMap_{axIdx} = obj.CurXChannel_;
         end
 
         function ShowLoading(obj, msg)
@@ -269,6 +346,16 @@ classdef TimeSeriesView < handle
                 'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('slice'));
             uimenu(cm, 'Text', '切片重置', ...
                 'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('sliceReset'));
+            obj.MenuSetXAxis_ = uimenu(cm, 'Text', '设为横轴', 'Separator', 'on', ...
+                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('setXAxis'));
+            obj.MenuClearXAxis_ = uimenu(cm, 'Text', '恢复默认横轴', ...
+                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('clearXAxis'), ...
+                'Enable', 'off');
+            obj.MenuSetRightY_ = uimenu(cm, 'Text', '设为右 Y 轴', ...
+                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('setRightY'));
+            obj.MenuClearRightY_ = uimenu(cm, 'Text', '恢复默认 Y 轴', ...
+                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('clearRightY'), ...
+                'Enable', 'off');
             obj.ChannelTable.ContextMenu = cm;
             cm.ContextMenuOpeningFcn = @(s, e) obj.OnContextMenuOpening();
 
@@ -303,7 +390,7 @@ classdef TimeSeriesView < handle
 
         function BuildToolbar(obj, parent)
             sq = 28;  % 小方按钮边长
-            tb = uigridlayout(parent, [1 11], ...
+            tb = uigridlayout(parent, [1 12], ...
                 'ColumnWidth', {sq, sq, sq, sq, 60, 48, '1x', 40, 40, 90, 44, 44}, ...
                 'RowHeight', {sq}, ...
                 'ColumnSpacing', 4, ...
@@ -374,6 +461,9 @@ classdef TimeSeriesView < handle
             obj.AxesCount_ = obj.AxesCount_ - 1;
             delete(obj.AxesHandles_{end});
             obj.AxesHandles_(end) = [];
+            if ~isempty(obj.AxesXChannelMap_) && length(obj.AxesXChannelMap_) >= obj.AxesCount_ + 1
+                obj.AxesXChannelMap_(end) = [];
+            end
             obj.FocusedAxes_ = min(obj.FocusedAxes_, obj.AxesCount_);
             obj.RelayoutGrid();
             obj.LinkXAxes();
@@ -416,15 +506,52 @@ classdef TimeSeriesView < handle
         end
 
         function LinkXAxes(obj)
-            valid = {};
+        % LinkXAxes 仅链接使用相同自定义横轴的 axes（默认索引的 axes 不互相链接）
+            % 先清除所有旧链接
             for i = 1:numel(obj.AxesHandles_)
                 a = obj.AxesHandles_{i};
                 if ~isempty(a) && isvalid(a)
-                    valid{end+1} = a; %#ok<AGROW>
+                    linkaxes(a, 'off');
                 end
             end
-            if numel(valid) >= 2
-                linkaxes([valid{:}], 'x');
+            % 收集有效 axes 及其 X 通道引用
+            validHandles = {};
+            validXRef = {};
+            for i = 1:numel(obj.AxesHandles_)
+                a = obj.AxesHandles_{i};
+                if ~isempty(a) && isvalid(a)
+                    validHandles{end+1} = a;
+                    if i <= length(obj.AxesXChannelMap_) && ~isempty(obj.AxesXChannelMap_{i})
+                        validXRef{end+1} = obj.AxesXChannelMap_{i};
+                    else
+                        validXRef{end+1} = [];
+                    end
+                end
+            end
+            if numel(validHandles) < 2
+                return;
+            end
+            % 按自定义X通道分组（默认索引的不参与链接）
+            groups = containers.Map('KeyType', 'char', 'ValueType', 'any');
+            for i = 1:numel(validHandles)
+                ref = validXRef{i};
+                if isempty(ref)
+                    continue; % 默认索引，不链接
+                end
+                key = sprintf('%d_%d', ref(1), ref(2));
+                if groups.isKey(key)
+                    groups(key) = [groups(key), validHandles(i)];
+                else
+                    groups(key) = validHandles(i);
+                end
+            end
+            % 每组内链接
+            keys = groups.keys();
+            for k = 1:numel(keys)
+                grp = groups(keys{k});
+                if numel(grp) >= 2
+                    linkaxes([grp{:}], 'x');
+                end
             end
         end
 
@@ -445,13 +572,9 @@ classdef TimeSeriesView < handle
                 ax = obj.AxesHandles_{i};
                 if i == obj.FocusedAxes_
                     ax.Box = 'on';
-                    ax.XColor = [0.8 0.2 0.2];
-                    ax.YColor = [0.8 0.2 0.2];
                     ax.LineWidth = 1.5;
                 else
                     ax.Box = 'off';
-                    ax.XColor = [0.15 0.15 0.15];
-                    ax.YColor = [0.15 0.15 0.15];
                     ax.LineWidth = 0.5;
                 end
             end
@@ -478,7 +601,6 @@ classdef TimeSeriesView < handle
                 obj.Renaming_ = false;
                 obj.ChannelTable.ColumnEditable(2) = false;
                 newName = strtrim(obj.ChannelTable.Data{visRow, 2});
-                newName = regexprep(newName, '^[▼▶]\s*', '');
                 % 名称无变化或为空 → 视为取消，恢复原名
                 if isempty(newName) || strcmp(newName, obj.RenameOriginal_)
                     obj.Rebuilding_ = true;
@@ -553,11 +675,53 @@ classdef TimeSeriesView < handle
         end
 
         function OnContextMenuOpening(obj)
-        % OnContextMenuOpening 右键时自动选中最近左键点击的行
+        % OnContextMenuOpening 右键时自动选中最近左键点击的行，并更新菜单可用性
             if obj.LastClickedRow_ >= 1 && obj.LastClickedRow_ <= size(obj.ChannelTable.Data, 1)
                 obj.Highlighting_ = true;
                 obj.ChannelTable.Selection = [obj.LastClickedRow_, 1; obj.LastClickedRow_, 2];
                 obj.Highlighting_ = false;
+            end
+
+            % 判断选中行类型，更新横轴/右Y轴菜单可用性
+            isChannel = false;
+            dsIdx = 0; chIdx = 0;
+            if ~isempty(obj.VisibleRowMap_) && obj.LastClickedRow_ >= 1 ...
+                    && obj.LastClickedRow_ <= numel(obj.VisibleRowMap_)
+                ci = obj.VisibleRowMap_(obj.LastClickedRow_);
+                r = obj.ChannelRows_(ci);
+                isChannel = ~r.isParent;
+                if isChannel
+                    dsIdx = r.datasetIdx;
+                    chIdx = r.colIdx;
+                end
+            end
+
+            isXChannel = isChannel && ~isempty(obj.CurXChannel_) ...
+                && obj.CurXChannel_(1) == dsIdx && obj.CurXChannel_(2) == chIdx;
+            % 检查是否在右Y列表中
+            isRightY = false;
+            if isChannel && ~isempty(obj.CurRightYChannel_)
+                for ri = 1:length(obj.CurRightYChannel_)
+                    if obj.CurRightYChannel_{ri}(1) == dsIdx && obj.CurRightYChannel_{ri}(2) == chIdx
+                        isRightY = true;
+                        break;
+                    end
+                end
+            end
+
+            obj.SetMenuEnable(obj.MenuSetXAxis_, isChannel && ~isXChannel);
+            obj.SetMenuEnable(obj.MenuClearXAxis_, isChannel && isXChannel);
+            obj.SetMenuEnable(obj.MenuSetRightY_, isChannel && ~isRightY && ~isXChannel);
+            obj.SetMenuEnable(obj.MenuClearRightY_, isChannel && isRightY);
+            % 父行禁用：采样频率、切片范围、切片重置
+            cm = obj.ChannelTable.ContextMenu;
+            for mi = 1:numel(cm.Children)
+                item = cm.Children(mi);
+                if strcmp(item.Text, '设置采样频率...') || ...
+                   strcmp(item.Text, '设置切片范围...') || ...
+                   strcmp(item.Text, '切片重置')
+                    obj.SetMenuEnable(item, isChannel);
+                end
             end
         end
 
@@ -619,6 +783,14 @@ classdef TimeSeriesView < handle
                     notify(obj, 'SliceResetClicked', payload);
                 case 'setSampleRate'
                     notify(obj, 'SetSampleRateClicked', payload);
+                case 'setXAxis'
+                    notify(obj, 'SetXAxisClicked', payload);
+                case 'clearXAxis'
+                    notify(obj, 'ClearXAxisClicked', AppEventData(struct('axesIdx', obj.GetFocusedAxes())));
+                case 'setRightY'
+                    notify(obj, 'SetRightYAxisClicked', payload);
+                case 'clearRightY'
+                    notify(obj, 'ClearRightYAxisClicked', AppEventData(struct('axesIdx', obj.GetFocusedAxes())));
             end
         end
 
@@ -652,6 +824,17 @@ classdef TimeSeriesView < handle
             for i = 1:numel(legs)
                 if isempty(legs(i).PlotChildren)
                     delete(legs(i));
+                end
+            end
+        end
+
+        function SetMenuEnable(~, menuItem, enabled)
+        % SetMenuEnable 设置菜单项可用性
+            if isvalid(menuItem)
+                if enabled
+                    menuItem.Enable = 'on';
+                else
+                    menuItem.Enable = 'off';
                 end
             end
         end

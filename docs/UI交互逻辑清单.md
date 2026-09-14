@@ -20,11 +20,11 @@
 | # | 按钮 | 触发 | 事件 | 载荷 | Presenter 处理 |
 |---|------|------|------|------|----------------|
 | 1 | `+` | 按钮点击 | `AxesAddClicked` | 无 | **无监听**（View 内部处理，上限6个axes） |
-| 2 | `-` | 按钮点击 | `AxesRemoveClicked` | 无 | `OnAxesRemove` → Session.RemoveAxes |
+| 2 | `-` | 按钮点击 | `AxesRemoveClicked` | 无 | `OnAxesRemove` → Session.RemoveAxes + SyncViewAxisState + RefreshChannelTable |
 | 3 | `‖` | 按钮点击 | `LayoutChanged` | `{mode:'single'}` | **无监听**（View 内部切换布局） |
 | 4 | `=` | 按钮点击 | `LayoutChanged` | `{mode:'dual'}` | **无监听**（View 内部切换布局） |
-| 5 | Export | 按钮点击 | `ExportClicked` | 无 | `OnExportFigure` → 复制线条到新 figure |
-| 6 | Clear | 按钮点击 | `ClearPlotClicked` | 无 | `OnClearPlot` → 清空所有 axes + session |
+| 5 | Export | 按钮点击 | `ExportClicked` | 无 | `OnExportFigure` → 复制线条到新 legacy figure（支持双Y轴 + 自定义横轴） |
+| 6 | Clear | 按钮点击 | `ClearPlotClicked` | 无 | `OnClearPlot` → 清空所有 axes + session + SyncViewAxisState + RefreshChannelTable |
 | 7 | FFT | 按钮点击 | `FftClicked` | 无 | `ShowSpectrumPopup('fft')` → 弹窗画频谱 |
 | 8 | PSD | 按钮点击 | `PsdClicked` | 无 | `ShowSpectrumPopup('psd')` → 弹窗画功率谱 |
 | 9 | Norm | 下拉+按钮 | `NormClicked` | `{mode: 'none'/'minmax'/'zscore'/'meanzero'}` | `OnNormalize` → 归一化并重绘 |
@@ -38,7 +38,7 @@
 |---|------|------|------|----------------|
 | 11 | Browse | `BrowseClicked` | 无 | `OnBrowseFolder` → 文件夹选择 → 导入 |
 | 12 | Import | `ImportButtonClicked` | 无 | `OnImportFiles` → 多文件选择 → 导入 |
-| 13 | Clear All | `ClearAllClicked` | 无 | `OnClearAll` → 清空全部数据集 + axes |
+| 13 | Clear All | `ClearAllClicked` | 无 | `OnClearAll` → 清空全部数据集 + axes + SyncViewAxisState + RefreshChannelTable |
 
 ---
 
@@ -54,6 +54,10 @@
 | 19 | 右键→设置采样频率 | 右键菜单 | `OnContextChannelAction('setSampleRate')` | `SetSampleRateClicked` | `{datasetIdx, colIdx}` | `OnSetSampleRate` → inputdlg → 回写 .mat/.json |
 | 20 | 右键→设置切片范围 | 右键菜单 | `OnContextChannelAction('slice')` | `SliceDialogClicked` | `{datasetIdx, colIdx}` | `OnSliceDialog` → inputdlg → 设置 slice |
 | 21 | 右键→切片重置 | 右键菜单 | `OnContextChannelAction('sliceReset')` | `SliceResetClicked` | `{datasetIdx, colIdx}` | `OnSliceReset` → 恢复全量数据 |
+| 22 | 右键→设为横轴 | 右键菜单 | `OnContextChannelAction('setXAxis')` | `SetXAxisClicked` | `{datasetIdx, colIdx}` | `OnSetXAxis` → Session.SetXChannel + SyncViewAxisState + RenderAxes + RefreshChannelTable |
+| 23 | 右键→恢复默认横轴 | 右键菜单 | `OnContextChannelAction('clearXAxis')` | `ClearXAxisClicked` | `{axesIdx}` | `OnClearXAxis` → Session.ClearXChannel + SyncViewAxisState + RenderAxes + RefreshChannelTable |
+| 24 | 右键→设为右 Y 轴 | 右键菜单 | `OnContextChannelAction('setRightY')` | `SetRightYAxisClicked` | `{datasetIdx, colIdx}` | `OnSetRightYAxis` → Session.SetRightYChannel（追加到列表）+ SyncViewAxisState + RenderAxes + RefreshChannelTable |
+| 25 | 右键→恢复默认 Y 轴 | 右键菜单 | `OnContextChannelAction('clearRightY')` | `ClearRightYAxisClicked` | `{axesIdx}` | `OnClearRightYAxis` → Session.ClearRightYChannel（清除全部右Y）+ SyncViewAxisState + RenderAxes + RefreshChannelTable |
 
 ---
 
@@ -61,22 +65,267 @@
 
 | # | 操作 | 触发 | 事件 | 载荷 | Presenter 处理 |
 |---|------|------|------|------|----------------|
-| 23 | 点击 axes | ButtonDownFcn | `AxesClicked` | `{axesIdx, x, y}` | `OnAxesClicked` → 状态栏更新 + `RefreshChannelTable`（同步复选框） |
+| 26 | 点击 axes | ButtonDownFcn | `AxesClicked` | `{axesIdx, x, y}` | `OnAxesClicked` → SyncViewAxisState + 状态栏更新（含自定义横轴数据集名） |
 
 ---
 
-## 六、传函分析 (`view/TransferFunctionView.m`)
+## 六、右键菜单可用性逻辑 (`OnContextMenuOpening`)
+
+右键菜单打开时，根据当前选中通道的状态动态启用/禁用菜单项：
+
+| 菜单项 | 启用条件 | 说明 |
+|--------|----------|------|
+| 设为横轴 | `isChannel && ~isXChannel` | 非横轴通道可用 |
+| 恢复默认横轴 | `isChannel && isXChannel` | 当前是横轴时可用 |
+| 设为右 Y 轴 | `isChannel && ~isRightY && ~isXChannel` | 非右Y且非横轴时可用 |
+| 恢复默认 Y 轴 | `isChannel && isRightY` | 当前是右Y时可用 |
+
+**变量定义：**
+- `isChannel`：选中行是通道行（非数据集父行）
+- `isXChannel`：选中通道是当前 axes 的横轴通道
+- `isRightY`：选中通道在当前 axes 的右Y通道列表中
+
+**互斥规则：**
+- 同一通道不能同时为横轴和右Y轴
+- 设为横轴时，如果该通道已是右Y，弹出错误提示 `'该通道已设为右 Y 轴，请先恢复'`
+- 设为右Y时，如果该通道已是横轴，弹出错误提示 `'该通道已设为横轴，请先恢复'`
+
+---
+
+## 七、自定义横轴逻辑
+
+### 7.1 数据流
+
+```
+Session.SetXChannel(axIdx, datasetIdx, colIdx)
+  → AxesXChannel_{axIdx} = struct('DatasetIdx', d, 'ColIdx', c)
+
+Presenter.RenderAxes(axesIdx)
+  → [xDsIdx, xColIdx] = Session.GetXChannel(axesIdx)
+  → hasXChannel = ~isempty(xDsIdx)
+  → xRaw = Session.GetDataset(xDsIdx).GetColumn(xColIdx)
+  → SliceChannel(chan, xRaw, hasXChannel)
+      → 若有切片：先对 xRaw 和 chan.Data 做 ApplySlice，再 min(length) 截断对齐
+      → 若无切片：直接 min(length) 截断对齐
+  → View.RenderWaveform(axesIdx, xCell, yCell, ...)
+      → xCell{k} 作为 plot 的 XData
+```
+
+### 7.2 横轴通道排除
+
+被设为横轴的通道不参与左Y渲染循环（`continue` 跳过），避免自引用对角线。
+
+### 7.3 归一化与自定义横轴
+
+`ComputeNormParams` 使用逻辑索引将 xlim 物理坐标映射到数据范围：
+```matlab
+mask = xSig >= xl(1) & xSig <= xl(2);
+refSig = sig(mask);
+```
+而非 `round(xlim)` 索引方式（仅适用于默认索引横轴）。
+
+### 7.4 状态栏显示
+
+自定义横轴时，状态栏显示数据集名：
+```
+Axes 1  |  X = 1234.56 (DRFDOT)  |  Y = 0.789
+```
+
+### 7.5 导出 Figure 的 X 标签
+
+导出时 X 轴标签格式：`数据集名 / 列名`（含列名信息）。
+
+---
+
+## 八、多右Y轴逻辑
+
+### 8.1 数据结构
+
+`SessionData.AxesRightYChannel_` 存储格式：
+```matlab
+AxesRightYChannel_{axIdx} = {
+    struct('DatasetIdx', 1, 'ColIdx', 3),   % 第1个右Y通道
+    struct('DatasetIdx', 1, 'ColIdx', 5),   % 第2个右Y通道
+    ...
+}
+% 无右Y时为空 cell: {}
+```
+
+### 8.2 添加/移除
+
+| 操作 | Session 方法 | 行为 |
+|------|-------------|------|
+| 设为右Y | `SetRightYChannel(axIdx, d, c)` | 追加到列表（自动去重） |
+| 恢复默认Y | `ClearRightYChannel(axIdx)` | 清空整个列表 |
+| 取消勾选通道 | `RemoveChannelFromAxes(axIdx, d, c)` | 从列表中移除匹配项 |
+| 删除数据集 | `RemoveDataset(idx)` | 遍历列表，移除匹配项，大于 idx 的 DatasetIdx 减1 |
+| 清空 axes | `ClearAxes(axIdx)` | 清空整个列表 |
+| 删除 axes | `RemoveAxes(idx)` | 清空整个列表 |
+| 清空全部 | `ClearAllDatasets` | 清空整个容器 |
+
+### 8.3 渲染流程
+
+```
+Presenter.RenderAxes(axesIdx)
+  → rightYRefs = Session.GetRightYChannel(axesIdx)   % cell array of structs
+  → hasRightY = ~isempty(rightYRefs)
+
+  → 构建右Y查找表 rightYSet (containers.Map)
+      → key = sprintf('%d_%d', DatasetIdx, ColIdx)
+
+  → 左Y循环：跳过右Y通道（rightYSet.isKey）和X轴通道
+
+  → 右Y数据收集：
+      for ri = 1:length(rightYRefs)
+          → FindChannelInList → SliceChannel → 构建 rightYData
+      end
+      rightYData = struct('x', {rx}, 'y', {ry}, 'labels', {rl}, 'colors', {rc})
+
+  → View.RenderWaveform(axesIdx, xCell, yCell, labels, colorList, rightYData)
+```
+
+### 8.4 View 渲染
+
+```matlab
+hasRightY = isstruct(rightYData) && isfield(rightYData, 'x') && ~isempty(rightYData.x);
+
+if hasRightY
+    % 双Y模式
+    yyaxis(ax, 'left');
+    → 画左Y线（'Tag','leftY', 'LineStyle','-'）
+    yyaxis(ax, 'right');
+    → 画右Y线（'Tag','rightY', 'LineStyle','--'）循环 rightYData.x
+    yyaxis(ax, 'left');  % 固定活动侧
+else
+    % 普通模式
+    → 画全部线（'LineStyle','-'）
+end
+```
+
+### 8.5 状态同步
+
+每次横轴/右Y轴变更后，Presenter 调用：
+```matlab
+SyncViewAxisState(axIdx)
+  → [xDsIdx, xColIdx] = Session.GetXChannel(axIdx)
+  → refs = Session.GetRightYChannel(axIdx)
+  → rightYList = cellfun(@(r) [r.DatasetIdx, r.ColIdx], refs, 'Uni', false)
+  → View.UpdateAxisChannelState(axIdx, xDsIdx, xColIdx, rightYList)
+      → 更新 CurXChannel_, CurRightYChannel_, AxesXChannelMap_
+```
+
+### 8.6 通道表标记
+
+`GetChannelState` 在通道勾选时附加标记：
+- `[X]`：该通道是当前 axes 的横轴
+- `[R]`：该通道在当前 axes 的右Y列表中
+
+仅在通道已勾选（`isChecked=true`）时显示标记。
+
+---
+
+## 九、RenderWaveform 渲染细节
+
+### 9.1 清除与重置
+
+```matlab
+delete(allchild(ax));           % 清除两侧所有线条（yyaxis 安全）
+ax.LineStyleOrder = '-';        % 重置线型顺序，避免 yyaxis 残留的圈/三角标记
+ax.LineStyleOrderIndex = 1;     % 重置线型循环索引
+ax.ColorOrderIndex = 1;         % 重置颜色循环索引
+```
+
+### 9.2 颜色分配
+
+使用 `ChannelColorIndex(datasetIdx, colIdx, nColors)` 哈希分配颜色：
+```matlab
+mod((datasetIdx-1)*7 + colIdx, nColors) + 1
+```
+保证同一通道在反复勾选/取消时颜色稳定。
+
+### 9.3 线型规则
+
+| 位置 | LineStyle | Tag |
+|------|-----------|-----|
+| 左Y通道 | `'-'`（实线） | `'leftY'` |
+| 右Y通道 | `'--'`（虚线） | `'rightY'` |
+| 普通模式（无右Y） | `'-'`（实线） | 无 |
+
+### 9.4 Legend
+
+- 通道数 ≥ 2：显示 legend（`'Interpreter','none'`, `'Location','northwest'`）
+- 通道数 = 1：`legend(ax, 'off')`
+
+---
+
+## 十、ExportFigure 导出逻辑
+
+### 10.1 线条过滤
+
+使用 Tag 过滤左右Y线（避免 `findobj` 返回全部线）：
+```matlab
+allSrcLines = findobj(ax, 'Type', 'line');
+leftSrc = allSrcLines(arrayfun(@(l) strcmp(l.Tag, 'leftY'), allSrcLines));
+rightSrc = allSrcLines(arrayfun(@(l) strcmp(l.Tag, 'rightY'), allSrcLines));
+hasRightY = ~isempty(rightSrc);
+```
+
+兼容旧 figure（无 Tag）：`leftSrc` 和 `rightSrc` 均为空，走普通模式分支。
+
+### 10.2 导出绘制
+
+- 左Y线 → `yyaxis(sub, 'left')` + `plot(sub, ...)`
+- 右Y线 → `yyaxis(sub, 'right')` + `plot(sub, ...)`
+- legend 使用 subplot 上的 handle（非源 axes handle）
+- X 标签格式：`数据集名 / 列名`
+
+### 10.3 源 axes 保护
+
+读取 YLabel 前切换源 axes 活动侧，读取后恢复：
+```matlab
+yyaxis(ax, 'left');
+leftLabel = get(get(ax, 'YLabel'), 'String');
+yyaxis(ax, 'right');
+rightLabel = get(get(ax, 'YLabel'), 'String');
+yyaxis(ax, 'left');  % 恢复
+```
+
+### 10.4 弹窗生命周期
+
+```matlab
+fig.CloseRequestFcn = @(s, e) obj.RemovePopup(fig);
+```
+关闭时从 `PopupFigures` 跟踪列表移除并 delete。
+
+---
+
+## 十一、LinkXAxes 链接逻辑
+
+`LinkXAxes` 按X通道引用分组链接，不同自定义横轴的 axes 不互相链接：
+
+```matlab
+→ 收集有效 axes 及其 X 通道引用 (AxesXChannelMap_)
+→ 按引用 key = sprintf('%d_%d', ref(1), ref(2)) 分组
+→ 每组内 linkaxes([grp{:}], 'x')
+```
+
+- 默认索引模式：key = `'0_0'`，所有默认X的 axes 链接在一起
+- 自定义横轴：相同数据集+列的 axes 链接，不同则独立
+
+---
+
+## 十二、传函分析 (`view/TransferFunctionView.m`)
 
 | # | 操作 | 触发 | 事件 | 载荷 | Presenter 处理 |
 |---|------|------|------|------|----------------|
-| 24 | Browse 按钮 | 按钮点击 | `BrowseClicked` | 无 | `OnBrowse` → 文件夹选择 → 写回路径 |
-| 25 | Import 按钮 | 按钮点击 | `ImportButtonClicked` | 无 | `OnImport` → 导入 → 提取 FRF 曲线 → 渲染 |
-| 26 | 曲线表复选框 | CellEdit | `CurveSelectionChanged` | `{row}`（未被使用） | `OnCurveSelection` → `ApplySelection` → 按勾选状态重绘 |
-| 27 | Clear All 按钮 | 按钮点击 | `ClearAllClicked` | 无 | `OnClearAll` → 清空曲线 + 重置路径 + 清空图表 |
+| 27 | Browse 按钮 | 按钮点击 | `BrowseClicked` | 无 | `OnBrowse` → 文件夹选择 → 写回路径 |
+| 28 | Import 按钮 | 按钮点击 | `ImportButtonClicked` | 无 | `OnImport` → 导入 → 提取 FRF 曲线 → 渲染 |
+| 29 | 曲线表复选框 | CellEdit | `CurveSelectionChanged` | `{row}`（未被使用） | `OnCurveSelection` → `ApplySelection` → 按勾选状态重绘 |
+| 30 | Clear All 按钮 | 按钮点击 | `ClearAllClicked` | 无 | `OnClearAll` → 清空曲线 + 重置路径 + 清空图表 |
 
 ---
 
-## 七、未被 Presenter 监听的事件
+## 十三、未被 Presenter 监听的事件
 
 | 事件 | 原因 |
 |------|------|
@@ -85,38 +334,45 @@
 
 ---
 
-## 八、Presenter 调用 View 的方法汇总
+## 十四、Presenter 调用 View 的方法汇总
 
 | View 方法 | 被哪些 Presenter 方法调用 |
 |-----------|--------------------------|
-| `GetFocusedAxes()` | OnChannelCheckChanged, OnNormalize, OnSliceDialog, OnSliceReset, OnRenameChannel, OnSetSampleRate, OnAxesClicked, ShowSpectrumPopup |
+| `GetFocusedAxes()` | OnChannelCheckChanged, OnNormalize, OnSliceDialog, OnSliceReset, OnRenameChannel, OnSetSampleRate, OnAxesClicked, ShowSpectrumPopup, OnSetXAxis, OnClearXAxis, OnSetRightYAxis, OnClearRightYAxis, OnClearPlot, OnClearAll |
 | `GetAxesCount()` | OnAxesRemove, OnExportFigure |
 | `GetAxes(idx)` | OnExportFigure, ComputeNormParams |
 | `ClearAllAxes()` | OnClearAll, OnClearPlot |
-| `ClearAxes(idx)` | RenderAxes |
+| `ClearAxes(idx)` | RenderAxes（空通道时） |
 | `RenderWaveform(...)` | RenderAxes |
-| `SetChannelTable(rows)` | RefreshChannelTable（11处调用） |
+| `SetChannelTable(rows)` | RefreshChannelTable（14处调用） |
+| `UpdateAxisChannelState(...)` | SyncViewAxisState（10处调用） |
 | `ShowLoading / CloseLoading` | OnBrowseFolder, OnImportFiles, OnExportDatasetExcel |
 | `ShowError / ShowInfo` | 多处验证逻辑 |
 
 ---
 
-## 九、状态栏消息 (`StatusCallback`)
+## 十五、状态栏消息 (`StatusCallback`)
 
 | 位置 | 消息 |
 |------|------|
 | `AddResultsToSession` | `'  导入 %d 个数据集'` |
 | `OnClearAll` | `' '`（清空） |
-| `OnAxesClicked`（有效 axes） | `'  Axes %d  \|  X = %.6g  \|  Y = %.6g'` |
+| `OnAxesClicked`（自定义横轴） | `'  Axes %d  \|  X = %.6g (%s)  \|  Y = %.6g'` |
+| `OnAxesClicked`（默认横轴） | `'  Axes %d  \|  X = %.6g  \|  Y = %.6g'` |
 | `OnAxesClicked`（无效） | `' '`（清空） |
 | `OnSetSampleRate` | `'  %s 采样率 = %g Hz'` |
+| `OnSetXAxis` | `'  Axes %d 横轴 → %s / %s'` |
+| `OnClearXAxis` | `'  Axes %d 横轴 → 默认'` |
 
 ---
 
-## 十、右键菜单路由逻辑
+## 十六、右键菜单路由逻辑
 
 ```
 OnContextMenuOpening()           ← 右键时自动选中最近左键点击的行
+  ├─ 计算 isXChannel, isRightY
+  ├─ 动态启用/禁用横轴、右Y菜单项
+  └─ 互斥：同通道不能同时为横轴和右Y
 
 OnContextRename()                ← 重命名（数据集行和通道行均可用）
   ├─ 设置 Renaming_=true, ColumnEditable(2)=true
@@ -128,7 +384,11 @@ OnContextAction(action)          ← 数据集级操作（父行）
 OnContextChannelAction(action)   ← 通道级操作（子行）
   ├─ 'setSampleRate'             设置采样频率
   ├─ 'slice'                     设置切片范围
-  └─ 'sliceReset'                切片重置
+  ├─ 'sliceReset'                切片重置
+  ├─ 'setXAxis'                  设为横轴
+  ├─ 'clearXAxis'                恢复默认横轴
+  ├─ 'setRightY'                 设为右Y轴（追加到列表）
+  └─ 'clearRightY'               恢复默认Y轴（清除全部右Y）
 ```
 
 隐含守卫：`OnContextAction` 跳过子行（`~r.isParent`），`OnContextChannelAction` 跳过父行（`r.isParent`）。
@@ -136,3 +396,32 @@ OnContextChannelAction(action)   ← 通道级操作（子行）
 数据集全选/取消：通过点击数据集行复选框实现（`OnChannelEdit` isParent 分支）。
 
 重命名模式：右键→重命名后，`Renaming_=true` 禁用展开/折叠，列2临时可编辑。确认（回车/Tab/点击其他地方）或取消（Escape/名称未变/点击其他行）后恢复。
+
+---
+
+## 十七、Session 状态管理汇总
+
+### 17.1 横轴/右Y轴状态清理时机
+
+| 操作 | 清理 X 引用 | 清理右Y引用 | SyncView | RefreshTable |
+|------|------------|------------|----------|-------------|
+| 勾选通道 (OnChannelCheckChanged) | — | — | ✅ | ✅ |
+| 取消勾选通道 (RemoveChannelFromAxes) | 匹配则清 | 匹配则移除 | ✅ | ✅ |
+| 删除数据集 (RemoveDataset) | 匹配则清+索引减1 | 匹配则移除+索引减1 | — | — |
+| 清空 axes (ClearAxes) | 清空 | 清空 | — | — |
+| 删除 axes (RemoveAxes) | 清空 | 清空 | ✅ | ✅ |
+| 清空全部 (ClearAllDatasets) | 清空容器 | 清空容器 | ✅ | ✅ |
+| 设为横轴 (OnSetXAxis) | 设置 | — | ✅ | ✅ |
+| 恢复默认横轴 (OnClearXAxis) | 清空 | — | ✅ | ✅ |
+| 设为右Y (OnSetRightYAxis) | — | 追加 | ✅ | ✅ |
+| 恢复默认Y (OnClearRightYAxis) | — | 清空 | ✅ | ✅ |
+| 清图 (OnClearPlot) | 清空 | 清空 | ✅ | ✅ |
+
+### 17.2 View 状态同步
+
+`SyncViewAxisState(axIdx)` 将 Session 的横轴/右Y轴状态同步到 View：
+- `CurXChannel_`：当前聚焦 axes 的横轴引用 `[dsIdx, colIdx]` 或 `[]`
+- `CurRightYChannel_`：当前聚焦 axes 的右Y引用列表 `cell array of [dsIdx, colIdx]`
+- `AxesXChannelMap_`：每轴的横轴引用（用于 `LinkXAxes` 分组）
+
+`ClearAllAxes()` 额外清除 View 的 `AxesXChannelMap_`、`CurXChannel_`、`CurRightYChannel_`。

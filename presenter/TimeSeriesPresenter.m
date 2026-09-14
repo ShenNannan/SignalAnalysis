@@ -11,6 +11,7 @@ classdef TimeSeriesPresenter < BasePresenter
         View            % TimeSeriesView
         Session         % SessionData
         StatusCallback  % function handle @(txt)
+        LastFocusedAxes_ = 0  % 上次聚焦的 axes 索引（避免重复刷新通道表）
     end
 
     methods
@@ -41,6 +42,10 @@ classdef TimeSeriesPresenter < BasePresenter
             obj.TrackListener(addlistener(view, 'SetSampleRateClicked', @obj.OnSetSampleRate));
             obj.TrackListener(addlistener(view, 'InlineRenameChannel', @obj.OnInlineRenameChannel));
             obj.TrackListener(addlistener(view, 'InlineRenameDataset', @obj.OnInlineRenameDataset));
+            obj.TrackListener(addlistener(view, 'SetXAxisClicked', @obj.OnSetXAxis));
+            obj.TrackListener(addlistener(view, 'ClearXAxisClicked', @obj.OnClearXAxis));
+            obj.TrackListener(addlistener(view, 'SetRightYAxisClicked', @obj.OnSetRightYAxis));
+            obj.TrackListener(addlistener(view, 'ClearRightYAxisClicked', @obj.OnClearRightYAxis));
 
             obj.RefreshChannelTable();
         end
@@ -80,7 +85,7 @@ classdef TimeSeriesPresenter < BasePresenter
             if isempty(startPath), startPath = pwd; end
 
             [~, filePaths] = FileExplorer.SelectFiles(startPath, ...
-                {'*.dat;*.csv;*.txt;*.xlsx', 'Data Files (*.dat;*.csv;*.txt;*.xlsx)'});
+                {'*.dat;*.csv;*.txt;*.xlsx;*.mat', 'Data Files (*.dat;*.csv;*.txt;*.xlsx;*.mat)'});
             if isempty(filePaths)
                 return;
             end
@@ -124,6 +129,7 @@ classdef TimeSeriesPresenter < BasePresenter
         function OnClearAll(obj, ~, ~)
             obj.Session.ClearAllDatasets();
             obj.View.ClearAllAxes();
+            obj.SyncViewAxisState(obj.View.GetFocusedAxes());
             obj.RefreshChannelTable();
             obj.StatusCallback(' ');
         end
@@ -142,6 +148,7 @@ classdef TimeSeriesPresenter < BasePresenter
                 obj.SetChannelChecked(axIdx, d.datasetIdx, d.colIdx, d.checked);
             end
             obj.RenderAxes(axIdx);
+            obj.SyncViewAxisState(axIdx);
             obj.RefreshChannelTable();
         end
 
@@ -156,35 +163,130 @@ classdef TimeSeriesPresenter < BasePresenter
         % ---- 渲染 ----
 
         function RenderAxes(obj, axesIdx)
-        % RenderAxes 叠画 axes 的全部通道（切片 + 归一化恢复）
+        % RenderAxes 叠画 axes 的全部通道（切片 + 归一化 + 自定义横轴 + 双Y轴）
             chans = obj.Session.GetAxesChannels(axesIdx);
             if isempty(chans)
                 obj.View.ClearAxes(axesIdx);
                 return;
             end
 
+            % ---- 横轴数据 ----
+            [xDsIdx, xColIdx] = obj.Session.GetXChannel(axesIdx);
+            hasXChannel = ~isempty(xDsIdx);
+            if hasXChannel
+                xRaw = obj.Session.GetDataset(xDsIdx).GetColumn(xColIdx);
+            else
+                xRaw = [];
+            end
+
+            % ---- 右Y通道识别（支持多个）----
+            rightYRefs = obj.Session.GetRightYChannel(axesIdx);
+            hasRightY = ~isempty(rightYRefs);
+
             colors = {'b', 'r', 'g', 'c', 'm', 'k'};
-            xCell = cell(1, length(chans));
-            yCell = cell(1, length(chans));
-            labels = cell(1, length(chans));
-            colorList = cell(1, length(chans));
+            xCell = {};
+            yCell = {};
+            labels = {};
+            colorList = {};
+            leftIdx = 0;
+
+            % 构建右Y通道快速查找表
+            rightYSet = containers.Map('KeyType', 'char', 'ValueType', 'logical');
+            if hasRightY
+                for ri = 1:length(rightYRefs)
+                    key = sprintf('%d_%d', rightYRefs{ri}.DatasetIdx, rightYRefs{ri}.ColIdx);
+                    rightYSet(key) = true;
+                end
+            end
 
             for c = 1:length(chans)
                 chan = chans{c};
-                if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
-                    sig = ChannelOperations.ApplySlice(chan.Data, chan.SliceRange(1), chan.SliceRange(2));
-                else
-                    sig = chan.Data;
+
+                % 右Y通道单独处理
+                chanKey = sprintf('%d_%d', chan.DatasetIdx, chan.ColIdx);
+                if hasRightY && rightYSet.isKey(chanKey)
+                    continue;
                 end
+                % X轴通道不画Y
+                if hasXChannel && chan.DatasetIdx == xDsIdx && chan.ColIdx == xColIdx
+                    continue;
+                end
+
+                [sig, xSig] = obj.SliceChannel(chan, xRaw, hasXChannel);
                 sig = obj.ApplyNorm(axesIdx, c, sig);
 
-                xCell{c} = (0:length(sig)-1)';
-                yCell{c} = sig;
-                labels{c} = chan.Label;
-                colorList{c} = colors{mod(c-1, length(colors)) + 1};
+                leftIdx = leftIdx + 1;
+                xCell{leftIdx} = xSig;
+                yCell{leftIdx} = sig;
+                labels{leftIdx} = chan.Label;
+                colorList{leftIdx} = colors{obj.ChannelColorIndex(chan.DatasetIdx, chan.ColIdx, length(colors))};
             end
 
-            obj.View.RenderWaveform(axesIdx, xCell, yCell, labels, colorList);
+            % ---- 右Y通道数据（多个）----
+            rightYData = struct('x', {{}}, 'y', {{}}, 'labels', {{}}, 'colors', {{}});
+            if hasRightY
+                rx = {}; ry = {}; rl = {}; rc = {};
+                for ri = 1:length(rightYRefs)
+                    ref = rightYRefs{ri};
+                    rightYChan = obj.FindChannelInList(chans, ref.DatasetIdx, ref.ColIdx);
+                    if ~isempty(rightYChan)
+                        [rySig, ryX] = obj.SliceChannel(rightYChan, xRaw, hasXChannel);
+                        rightColor = colors{obj.ChannelColorIndex(rightYChan.DatasetIdx, rightYChan.ColIdx, length(colors))};
+                        [~, shortLabel] = strtok(rightYChan.Label, '/');
+                        if isempty(shortLabel)
+                            ryDisplayName = rightYChan.Label;
+                        else
+                            ryDisplayName = strtrim(shortLabel(2:end));
+                        end
+                        rx{end+1} = ryX; ry{end+1} = rySig;
+                        rl{end+1} = ryDisplayName; rc{end+1} = rightColor;
+                    end
+                end
+                rightYData = struct('x', {rx}, 'y', {ry}, 'labels', {rl}, 'colors', {rc});
+            end
+
+            obj.View.RenderWaveform(axesIdx, xCell, yCell, labels, colorList, rightYData);
+        end
+
+        function [sig, xSig] = SliceChannel(~, chan, xRaw, hasXChannel)
+        % SliceChannel 对通道数据和横轴数据做切片并对齐
+            if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
+                sr = chan.SliceRange;
+                sig = ChannelOperations.ApplySlice(chan.Data, sr(1), sr(2));
+                if hasXChannel
+                    xSig = ChannelOperations.ApplySlice(xRaw, sr(1), sr(2));
+                    n = min(length(xSig), length(sig));
+                    xSig = xSig(1:n);
+                    sig = sig(1:n);
+                else
+                    xSig = (0:length(sig)-1)';
+                end
+            else
+                sig = chan.Data;
+                if hasXChannel
+                    n = min(length(xRaw), length(sig));
+                    xSig = xRaw(1:n);
+                    sig = sig(1:n);
+                else
+                    xSig = (0:length(sig)-1)';
+                end
+            end
+        end
+
+        function idx = ChannelColorIndex(~, datasetIdx, colIdx, nColors)
+        % ChannelColorIndex 通道→颜色索引（基于 datasetIdx+colIdx 哈希，与序号无关）
+            idx = mod((datasetIdx - 1) * 7 + colIdx, nColors) + 1;
+        end
+
+        function chan = FindChannelInList(~, chans, datasetIdx, colIdx)
+        % FindChannelInList 在通道列表中查找指定通道
+            chan = [];
+            for i = 1:length(chans)
+                if chans{i}.DatasetIdx == datasetIdx && chans{i}.ColIdx == colIdx
+                    chan = chans{i};
+                    return;
+                end
+            end
         end
 
         function sig = ApplyNorm(obj, axesIdx, chanIdx, sig)
@@ -267,10 +369,11 @@ classdef TimeSeriesPresenter < BasePresenter
         end
 
         function [isChecked, sliceTag] = GetChannelState(obj, datasetIdx, colIdx)
-        % GetChannelState 通道在聚焦 axes 上的状态与切片标记
+        % GetChannelState 通道在聚焦 axes 上的状态与标记（切片/横轴/右Y轴）
             isChecked = false;
             sliceTag = '';
-            chans = obj.Session.GetAxesChannels(obj.View.GetFocusedAxes());
+            axIdx = obj.View.GetFocusedAxes();
+            chans = obj.Session.GetAxesChannels(axIdx);
             for sc = 1:length(chans)
                 if chans{sc}.DatasetIdx == datasetIdx && chans{sc}.ColIdx == colIdx
                     isChecked = true;
@@ -279,7 +382,19 @@ classdef TimeSeriesPresenter < BasePresenter
                         totalN = length(chans{sc}.Data);
                         segLen = sr(2) - sr(1) + 1;
                         if sr(1) > 1 || sr(2) < totalN || sr(2) > totalN
-                            sliceTag = sprintf(' [%d~%d L%d]', sr(1), sr(2), segLen);
+                            sliceTag = [sliceTag sprintf(' [%d~%d L%d]', sr(1), sr(2), segLen)]; %#ok<AGROW>
+                        end
+                    end
+                    % 横轴/右Y轴标记（仅在通道勾选时显示）
+                    [xDsIdx, xColIdx] = obj.Session.GetXChannel(axIdx);
+                    if ~isempty(xDsIdx) && xDsIdx == datasetIdx && xColIdx == colIdx
+                        sliceTag = [sliceTag ' [X]'];
+                    end
+                    refs = obj.Session.GetRightYChannel(axIdx);
+                    for ri = 1:length(refs)
+                        if refs{ri}.DatasetIdx == datasetIdx && refs{ri}.ColIdx == colIdx
+                            sliceTag = [sliceTag ' [R]'];
+                            break;
                         end
                     end
                     break;
@@ -291,6 +406,8 @@ classdef TimeSeriesPresenter < BasePresenter
 
         function OnAxesRemove(obj, ~, ~)
             obj.Session.RemoveAxes(obj.View.GetAxesCount() + 1);
+            obj.SyncViewAxisState(obj.View.GetFocusedAxes());
+            obj.RefreshChannelTable();
         end
 
         function OnClearPlot(obj, ~, ~)
@@ -298,7 +415,90 @@ classdef TimeSeriesPresenter < BasePresenter
             for a = 1:obj.Session.AxesSlotCount
                 obj.Session.ClearAxes(a);
             end
+            obj.SyncViewAxisState(obj.View.GetFocusedAxes());
             obj.RefreshChannelTable();
+        end
+
+        % ---- 横轴/右Y轴 ----
+
+        function OnSetXAxis(obj, ~, evt)
+        % OnSetXAxis 设置当前聚焦 axes 的横轴通道
+            d = evt.Data;
+            axIdx = obj.View.GetFocusedAxes();
+
+            % 禁止同通道同时为横轴和右Y
+            refs = obj.Session.GetRightYChannel(axIdx);
+            for i = 1:length(refs)
+                if refs{i}.DatasetIdx == d.datasetIdx && refs{i}.ColIdx == d.colIdx
+                    obj.View.ShowError('该通道已设为右 Y 轴，请先恢复');
+                    return;
+                end
+            end
+
+            obj.Session.SetXChannel(axIdx, d.datasetIdx, d.colIdx);
+            obj.SyncViewAxisState(axIdx);
+            obj.RenderAxes(axIdx);
+            obj.RefreshChannelTable();
+            dsName = obj.Session.GetDatasetName(d.datasetIdx);
+            ds = obj.Session.GetDataset(d.datasetIdx);
+            colName = ds.GetColumnName(d.colIdx);
+            obj.StatusCallback(sprintf('  Axes %d 横轴 → %s / %s', axIdx, dsName, colName));
+        end
+
+        function OnClearXAxis(obj, ~, ~)
+        % OnClearXAxis 恢复当前聚焦 axes 默认横轴
+            axIdx = obj.View.GetFocusedAxes();
+            obj.Session.ClearXChannel(axIdx);
+            obj.SyncViewAxisState(axIdx);
+            obj.RenderAxes(axIdx);
+            obj.RefreshChannelTable();
+            obj.StatusCallback(sprintf('  Axes %d 横轴 → 默认', axIdx));
+        end
+
+        function OnSetRightYAxis(obj, ~, evt)
+        % OnSetRightYAxis 设置当前聚焦 axes 的右Y轴通道
+            d = evt.Data;
+            axIdx = obj.View.GetFocusedAxes();
+
+            % 禁止同通道同时为横轴和右Y
+            [xDsIdx, xColIdx] = obj.Session.GetXChannel(axIdx);
+            if ~isempty(xDsIdx) && xDsIdx == d.datasetIdx && xColIdx == d.colIdx
+                obj.View.ShowError('该通道已设为横轴，请先恢复');
+                return;
+            end
+
+            obj.Session.SetRightYChannel(axIdx, d.datasetIdx, d.colIdx);
+            obj.SyncViewAxisState(axIdx);
+            obj.RenderAxes(axIdx);
+            obj.RefreshChannelTable();
+        end
+
+        function OnClearRightYAxis(obj, ~, ~)
+        % OnClearRightYAxis 恢复当前聚焦 axes 单Y轴模式
+            axIdx = obj.View.GetFocusedAxes();
+            obj.Session.ClearRightYChannel(axIdx);
+            obj.SyncViewAxisState(axIdx);
+            obj.RenderAxes(axIdx);
+            obj.RefreshChannelTable();
+        end
+
+        function SyncViewAxisState(obj, axIdx)
+        % SyncViewAxisState 将 Session 的横轴/右Y轴状态同步到 View
+            [xDsIdx, xColIdx] = obj.Session.GetXChannel(axIdx);
+            refs = obj.Session.GetRightYChannel(axIdx);
+            rightYList = cell(1, length(refs));
+            for i = 1:length(refs)
+                rightYList{i} = [refs{i}.DatasetIdx, refs{i}.ColIdx];
+            end
+            obj.View.UpdateAxisChannelState(axIdx, xDsIdx, xColIdx, rightYList);
+
+            % 同步归一化下拉框
+            normMode = obj.Session.GetAxesNormMode(axIdx);
+            modeMap = containers.Map({'none','minmax','zscore','meanzero'}, ...
+                {'None','Min-Max','Z-Score','Mean Zero'});
+            if modeMap.isKey(normMode)
+                obj.View.NormDropdown.Value = modeMap(normMode);
+            end
         end
 
         % ---- 归一化 ----
@@ -323,8 +523,13 @@ classdef TimeSeriesPresenter < BasePresenter
                 return;
             end
             xl = xlim(ax);
-            refStart = max(1, round(xl(1)));
-            refEnd = round(xl(2));
+
+            % 获取横轴数据（用于物理坐标→数据掩码映射）
+            [xDsIdx, xColIdx] = obj.Session.GetXChannel(axIdx);
+            hasXChannel = ~isempty(xDsIdx);
+            if hasXChannel
+                xRaw = obj.Session.GetDataset(xDsIdx).GetColumn(xColIdx);
+            end
 
             chans = obj.Session.GetAxesChannels(axIdx);
             if isempty(chans)
@@ -335,17 +540,51 @@ classdef TimeSeriesPresenter < BasePresenter
             channelStats = {};
             for i = 1:length(chans)
                 chan = chans{i};
+                % 切片
                 if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
-                    sliceStart = chan.SliceRange(1);
+                    sr = chan.SliceRange;
+                    sig = ChannelOperations.ApplySlice(chan.Data, sr(1), sr(2));
+                    if hasXChannel
+                        xSig = ChannelOperations.ApplySlice(xRaw, sr(1), sr(2));
+                        n = min(length(xSig), length(sig));
+                        xSig = xSig(1:n); sig = sig(1:n);
+                    end
                 else
-                    sliceStart = 1;
+                    sig = chan.Data;
+                    if hasXChannel
+                        n = min(length(xRaw), length(sig));
+                        xSig = xRaw(1:n); sig = sig(1:n);
+                    end
                 end
-                channelStats{end+1} = ChannelOperations.ComputeStats( ... %#ok<AGROW>
-                    chan.Data, refStart, refEnd, sliceStart);
+
+                if hasXChannel
+                    % 逻辑索引：物理坐标范围 → 数据子集
+                    mask = xSig >= xl(1) & xSig <= xl(2);
+                    refSig = sig(mask);
+                    if isempty(refSig)
+                        refSig = sig;  % fallback
+                    end
+                    s = struct();
+                    s.minY = min(refSig);
+                    s.maxY = max(refSig);
+                    s.meanY = mean(refSig);
+                    s.stdY = std(refSig);
+                else
+                    % 传统模式：xlim 直接是索引范围
+                    refStart = max(1, round(xl(1)));
+                    refEnd = round(xl(2));
+                    if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
+                        sliceStart = chan.SliceRange(1);
+                    else
+                        sliceStart = 1;
+                    end
+                    s = ChannelOperations.ComputeStats(chan.Data, refStart, refEnd, sliceStart);
+                end
+                channelStats{end+1} = s; %#ok<AGROW>
             end
 
             normParams = struct();
-            normParams.refWindow = [refStart, refEnd];
+            normParams.refWindow = xl;
             normParams.channelStats = channelStats;
         end
 
@@ -368,20 +607,18 @@ classdef TimeSeriesPresenter < BasePresenter
             ds = obj.Session.GetDataset(d.datasetIdx);
             colName = ds.GetColumnName(d.colIdx);
 
-            answer = inputdlg({'起点行号:', '长度:'}, ...
-                sprintf('设置切片范围 - %s (共 %d 行)', colName, totalRows), ...
-                1, {num2str(currentRange(1)), num2str(currentLen)});
-            if isempty(answer), return; end
+            result = obj.PromptSliceRange(colName, totalRows, currentRange(1), currentLen);
+            if isempty(result), return; end
+            startRow = result(1);
+            segLen = result(2);
 
-            startRow = round(str2double(answer{1}));
-            segLen = round(str2double(answer{2}));
-            if isnan(startRow) || isnan(segLen) || startRow < 1 || segLen < 1
-                obj.View.ShowError('起点 ≥1, 长度 ≥1');
+            if startRow > totalRows
+                obj.View.ShowError(sprintf('起点 %d 超过数据总行数 %d', startRow, totalRows));
                 return;
             end
             endRow = startRow + segLen - 1;
-            if endRow > totalRows && segLen > startRow
-                obj.View.ShowError(sprintf('回绕时长度不能超过起点 %d', startRow));
+            if segLen > totalRows
+                obj.View.ShowError(sprintf('切片长度 %d 超过数据总行数 %d', segLen, totalRows));
                 return;
             end
 
@@ -425,18 +662,7 @@ classdef TimeSeriesPresenter < BasePresenter
                 return;
             end
 
-            newNames = ds.ColumnNames;
-            newNames{d.colIdx} = newName;
-            newDs = ds.RebuildWithColumnNames(newNames);
-            obj.Session.UpdateDataset(d.datasetIdx, newDs);
-
-            matPath = obj.Session.GetDatasetMatPath(d.datasetIdx);
-            if ~isempty(matPath)
-                sa_column_names = newNames; %#ok<NASGU>
-                save(matPath, 'sa_column_names', '-append');
-                DataReaderFactory.UpdateColumnNamesInMeta(matPath, newNames);
-            end
-
+            obj.PersistRenameChannel(d.datasetIdx, d.colIdx, newName);
             obj.RefreshChannelTable();
             obj.RenderAxes(obj.View.GetFocusedAxes());
         end
@@ -450,18 +676,8 @@ classdef TimeSeriesPresenter < BasePresenter
             if isempty(newName) || strcmp(newName, currentName)
                 return;
             end
-            newNames = ds.ColumnNames;
-            newNames{d.colIdx} = newName;
-            newDs = ds.RebuildWithColumnNames(newNames);
-            obj.Session.UpdateDataset(d.datasetIdx, newDs);
 
-            matPath = obj.Session.GetDatasetMatPath(d.datasetIdx);
-            if ~isempty(matPath)
-                sa_column_names = newNames; %#ok<NASGU>
-                save(matPath, 'sa_column_names', '-append');
-                DataReaderFactory.UpdateColumnNamesInMeta(matPath, newNames);
-            end
-
+            obj.PersistRenameChannel(d.datasetIdx, d.colIdx, newName);
             obj.RefreshChannelTable();
             obj.RenderAxes(obj.View.GetFocusedAxes());
         end
@@ -476,7 +692,7 @@ classdef TimeSeriesPresenter < BasePresenter
             end
             obj.Session.SetDatasetName(d.datasetIdx, newName);
 
-            matPath = obj.Session.GetDatasetMatPath(d.datasetIdx);
+            matPath = obj.Session.GetDatasetPath(d.datasetIdx);
             if ~isempty(matPath)
                 sa_dataset_name = newName; %#ok<NASGU>
                 save(matPath, 'sa_dataset_name', '-append');
@@ -506,28 +722,9 @@ classdef TimeSeriesPresenter < BasePresenter
                 return;
             end
             dsName = obj.Session.GetDatasetName(datasetIdx);
-            answer = inputdlg(sprintf('数据集: %s\n采样率 (Hz):', dsName), ...
-                '设置采样率', 1, {''});
-            if isempty(answer), return; end
-            newRate = str2double(answer{1});
-            if isnan(newRate) || newRate <= 0
-                obj.View.ShowError('采样率必须为正数');
-                return;
-            end
-            obj.Session.UpdateSampleRate(datasetIdx, newRate);
-            matPath = obj.Session.GetDatasetPath(datasetIdx);
-            if ~isempty(matPath) && exist(matPath, 'file')
-                DataReaderFactory.UpdateSampleRateInMat(matPath, newRate);
-                jsonPath = strrep(matPath, '_standardized.mat', '_standardized_meta.json');
-                if exist(jsonPath, 'file')
-                    try
-                        meta = jsondecode(fileread(jsonPath));
-                        meta.sample_rate = newRate;
-                        DataReaderFactory.WriteJson(jsonPath, meta);
-                    catch
-                    end
-                end
-            end
+            newRate = obj.PromptSampleRate(dsName);
+            if isempty(newRate), return; end
+            obj.PersistSampleRate(datasetIdx, newRate);
             sampleRate = newRate;
         end
 
@@ -539,28 +736,9 @@ classdef TimeSeriesPresenter < BasePresenter
             dsName = obj.Session.GetDatasetName(d.datasetIdx);
             default = '';
             if ~isempty(currentRate), default = num2str(currentRate); end
-            answer = inputdlg(sprintf('数据集: %s\n采样率 (Hz):', dsName), ...
-                '设置采样率', 1, {default});
-            if isempty(answer), return; end
-            newRate = str2double(answer{1});
-            if isnan(newRate) || newRate <= 0
-                obj.View.ShowError('采样率必须为正数');
-                return;
-            end
-            obj.Session.UpdateSampleRate(d.datasetIdx, newRate);
-            matPath = obj.Session.GetDatasetPath(d.datasetIdx);
-            if ~isempty(matPath) && exist(matPath, 'file')
-                DataReaderFactory.UpdateSampleRateInMat(matPath, newRate);
-                jsonPath = strrep(matPath, '_standardized.mat', '_standardized_meta.json');
-                if exist(jsonPath, 'file')
-                    try
-                        meta = jsondecode(fileread(jsonPath));
-                        meta.sample_rate = newRate;
-                        DataReaderFactory.WriteJson(jsonPath, meta);
-                    catch
-                    end
-                end
-            end
+            newRate = obj.PromptSampleRate(dsName, default);
+            if isempty(newRate), return; end
+            obj.PersistSampleRate(d.datasetIdx, newRate);
             obj.RefreshChannelTable();
             obj.RenderAxes(obj.View.GetFocusedAxes());
             obj.StatusCallback(sprintf('  %s 采样率 = %g Hz', dsName, newRate));
@@ -578,6 +756,15 @@ classdef TimeSeriesPresenter < BasePresenter
             end
 
             colors = {'b', 'r', 'g', 'c', 'm', 'k'};
+
+            % 检查自定义横轴
+            [xDsIdx, xColIdx] = obj.Session.GetXChannel(axIdx);
+            hasXChannel = ~isempty(xDsIdx);
+            xRaw = [];
+            if hasXChannel
+                xRaw = obj.Session.GetDataset(xDsIdx).GetColumn(xColIdx);
+            end
+
             fig = uifigure('Name', sprintf('Spectrum - %s', upper(analysisType)), ...
                 'NumberTitle', 'off', 'Position', [200 150 900 700]);
             obj.TrackPopup(fig);
@@ -606,18 +793,40 @@ classdef TimeSeriesPresenter < BasePresenter
                 else
                     sig = chan.Data;
                 end
+                % c 本身就是 chans 列表的索引，与 ComputeNormParams 的 channelStats 对齐
+                sig = obj.ApplyNorm(axIdx, c, sig);
 
-                sampleIdx = (0:length(sig)-1)';
-                chanColor = colors{mod(c-1, length(colors)) + 1};
+                % 横轴数据
+                if hasXChannel && ~isempty(xRaw)
+                    if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
+                        xSig = ChannelOperations.ApplySlice(xRaw, chan.SliceRange(1), chan.SliceRange(2));
+                    else
+                        xSig = xRaw;
+                    end
+                    n = min(length(xSig), length(sig));
+                    xSig = xSig(1:n); sig = sig(1:n);
+                else
+                    xSig = (0:length(sig)-1)';
+                end
+
+                chanColor = colors{obj.ChannelColorIndex(chan.DatasetIdx, chan.ColIdx, length(colors))};
                 chanLabel = chan.Label;
                 nPlotted = nPlotted + 1;
 
-                plot(ax1, sampleIdx, sig, 'Color', chanColor, 'DisplayName', chanLabel);
+                plot(ax1, xSig, sig, 'Color', chanColor, 'DisplayName', chanLabel);
+
+                % 调试输出（排查 FFT/PSD 数据源）
+                fprintf('[FFT-DEBUG] chan=%s  N=%d  Fs=%g  norm=%s  slice=%s  hasNaN=%d  hasInf=%d  range=[%g, %g]\n', ...
+                    chanLabel, length(sig), sampleRate, ...
+                    obj.Session.GetAxesNormMode(axIdx), ...
+                    mat2str(chan.SliceRange), ...
+                    any(isnan(sig)), any(isinf(sig)), ...
+                    min(sig), max(sig));
 
                 switch lower(analysisType)
                     case 'fft'
-                        [P1, freq] = SignalProcessor.ComputeFFTSingleSided(sig, sampleRate);
-                        if freq(1) == 0
+                        [P1, freq] = SignalProcessor.ComputeSpectrumWelch(sig, sampleRate);
+                        if abs(freq(1)) < eps
                             semilogx(ax2, freq(2:end), P1(2:end), 'Color', chanColor, 'DisplayName', chanLabel);
                         else
                             semilogx(ax2, freq, P1, 'Color', chanColor, 'DisplayName', chanLabel);
@@ -625,7 +834,9 @@ classdef TimeSeriesPresenter < BasePresenter
                     case 'psd'
                         [cumRms, freq, totalRms] = SignalProcessor.ComputeCumulativeRMS(sig, sampleRate);
                         label = sprintf('%s (RMS=%.4f)', chanLabel, totalRms);
-                        if freq(1) == 0
+                        fprintf('[PSD-DEBUG]   freq=[%g, %g] Hz  df=%g Hz  totalRMS=%.4g\n', ...
+                            freq(2), freq(end), freq(2)-freq(1), totalRms);
+                        if abs(freq(1)) < eps
                             semilogx(ax2, freq(2:end), cumRms(2:end), 'Color', chanColor, 'DisplayName', label);
                         else
                             semilogx(ax2, freq, cumRms, 'Color', chanColor, 'DisplayName', label);
@@ -635,15 +846,23 @@ classdef TimeSeriesPresenter < BasePresenter
 
             hold(ax1, 'off');
             hold(ax2, 'off');
-            xlabel(ax1, 'Sample Index');
+            if hasXChannel
+                dsName = obj.Session.GetDatasetName(xDsIdx);
+                ds = obj.Session.GetDataset(xDsIdx);
+                xlabel(ax1, sprintf('%s / %s', dsName, ds.GetColumnName(xColIdx)));
+            else
+                xlabel(ax1, 'Sample Index');
+            end
             ylabel(ax1, 'Amplitude');
             title(ax1, 'Time Domain Signal');
             grid(ax1, 'on');
+            ax2.XScale = 'log';
+            ax2.YScale = 'log';
             xlabel(ax2, 'Frequency (Hz)');
             grid(ax2, 'on');
             if strcmpi(analysisType, 'fft')
                 ylabel(ax2, 'Amplitude');
-                title(ax2, 'FFT Single-Sided Amplitude Spectrum');
+                title(ax2, 'Spectrum (Welch PSD)');
             else
                 ylabel(ax2, 'Cumulative RMS');
                 title(ax2, 'Cumulative RMS (from PSD)');
@@ -687,14 +906,14 @@ classdef TimeSeriesPresenter < BasePresenter
                        'log10', 'detrend', 'rms', 'smooth'};
 
             dlg = uifigure('Name', '通道运算', 'NumberTitle', 'off', ...
-                'Position', [400 260 380 480], 'Resize', 'off');
+                'Position', [400 260 380 440], 'Resize', 'off');
             obj.TrackPopup(dlg);
             dlg.CloseRequestFcn = @(s, e) obj.RemovePopup(dlg);
 
             g = uigridlayout(dlg, [10 2], ...
-                'RowHeight', repmat({32}, 1, 10), ...
+                'RowHeight', [repmat({28}, 1, 9), {36}], ...
                 'ColumnWidth', {110, '1x'}, ...
-                'Padding', [10 10 10 10], 'RowSpacing', 6);
+                'Padding', [10 10 10 10], 'RowSpacing', 5);
 
             uilabel(g, 'Text', '运算类型:');
             opPopup = uidropdown(g, 'Items', opTypes, 'Value', opTypes{1}, ...
@@ -720,10 +939,14 @@ classdef TimeSeriesPresenter < BasePresenter
             uilabel(g, 'Text', '结果名称:');
             editName = uieditfield(g, 'text', 'Value', '');
             btnGrid = uigridlayout(g, [1 2], 'ColumnWidth', {'1x', '1x'}, ...
-                'ColumnSpacing', 8);
+                'ColumnSpacing', 8, 'RowHeight', {28}, 'Padding', [0 0 0 0]);
             btnGrid.Layout.Column = [1 2];
-            uibutton(btnGrid, 'push', 'Text', '确定', 'ButtonPushedFcn', @(s, e) doCalc());
-            uibutton(btnGrid, 'push', 'Text', '取消', 'ButtonPushedFcn', @(s, e) obj.RemovePopup(dlg));
+            uibutton(btnGrid, 'push', 'Text', '确定', ...
+                'VerticalAlignment', 'bottom', ...
+                'ButtonPushedFcn', @(s, e) doCalc());
+            uibutton(btnGrid, 'push', 'Text', '取消', ...
+                'VerticalAlignment', 'bottom', ...
+                'ButtonPushedFcn', @(s, e) obj.RemovePopup(dlg));
 
             updateOpType();
 
@@ -884,38 +1107,91 @@ classdef TimeSeriesPresenter < BasePresenter
         % ---- 导出 ----
 
         function OnExportFigure(obj, ~, ~)
-        % OnExportFigure 导出全部 axes 到独立 legacy figure（视觉属性保真）
+        % OnExportFigure 导出全部 axes 到独立 legacy figure（支持双Y轴和自定义横轴）
             n = obj.View.GetAxesCount();
             if n == 0
                 return;
             end
             fig = figure('Name', 'Export', 'NumberTitle', 'off');
             obj.TrackPopup(fig);
+            fig.CloseRequestFcn = @(s, e) obj.RemovePopup(fig);
 
             for i = 1:n
                 ax = obj.View.GetAxes(i);
                 sub = subplot(n, 1, i, 'Parent', fig);
-                lines = flipud(findobj(ax, 'Type', 'line'));
-                hold(sub, 'on');
-                for k = 1:numel(lines)
-                    l = lines(k);
-                    plot(sub, l.XData, l.YData, ...
-                        'Color', l.Color, ...
-                        'LineStyle', l.LineStyle, ...
-                        'LineWidth', l.LineWidth, ...
-                        'Marker', l.Marker, ...
-                        'MarkerSize', l.MarkerSize, ...
-                        'DisplayName', l.DisplayName);
+
+                % 按 Tag 过滤左右Y线（避免 findobj 返回全部线）
+                allSrcLines = findobj(ax, 'Type', 'line');
+                leftSrc = allSrcLines(arrayfun(@(l) strcmp(l.Tag, 'leftY'), allSrcLines));
+                rightSrc = allSrcLines(arrayfun(@(l) strcmp(l.Tag, 'rightY'), allSrcLines));
+                hasRightY = ~isempty(rightSrc);
+
+                if hasRightY
+                    % 左 Y → 导出 figure
+                    yyaxis(sub, 'left');
+                    hold(sub, 'on');
+                    subLeftLines = gobjects(0);
+                    for k = 1:numel(leftSrc)
+                        l = leftSrc(k);
+                        h = plot(sub, l.XData, l.YData, ...
+                            'Color', l.Color, 'LineStyle', l.LineStyle, ...
+                            'LineWidth', l.LineWidth, 'Marker', l.Marker, ...
+                            'MarkerSize', l.MarkerSize, 'DisplayName', l.DisplayName);
+                        subLeftLines(end+1) = h;
+                    end
+                    hold(sub, 'off');
+                    yyaxis(ax, 'left');
+                    ylabel(sub, get(get(ax, 'YLabel'), 'String'));
+
+                    % 右 Y → 导出 figure
+                    yyaxis(sub, 'right');
+                    hold(sub, 'on');
+                    subRightLines = gobjects(0);
+                    for k = 1:numel(rightSrc)
+                        l = rightSrc(k);
+                        h = plot(sub, l.XData, l.YData, ...
+                            'Color', l.Color, 'LineStyle', l.LineStyle, ...
+                            'LineWidth', l.LineWidth, 'Marker', l.Marker, ...
+                            'MarkerSize', l.MarkerSize, 'DisplayName', l.DisplayName);
+                        subRightLines(end+1) = h;
+                    end
+                    hold(sub, 'off');
+                    yyaxis(ax, 'right');
+                    ylabel(sub, get(get(ax, 'YLabel'), 'String'));
+                    yyaxis(ax, 'left');  % 恢复源 axes 活动侧
+
+                    subAllLines = [subLeftLines, subRightLines];
+                    yyaxis(sub, 'left');
+                else
+                    hold(sub, 'on');
+                    subAllLines = gobjects(0);
+                    for k = 1:numel(allSrcLines)
+                        l = allSrcLines(k);
+                        h = plot(sub, l.XData, l.YData, ...
+                            'Color', l.Color, 'LineStyle', l.LineStyle, ...
+                            'LineWidth', l.LineWidth, 'Marker', l.Marker, ...
+                            'MarkerSize', l.MarkerSize, 'DisplayName', l.DisplayName);
+                        subAllLines(end+1) = h;
+                    end
+                    hold(sub, 'off');
+                    ylabel(sub, get(get(ax, 'YLabel'), 'String'));
                 end
-                hold(sub, 'off');
+
                 grid(sub, 'on');
                 title(sub, get(get(ax, 'Title'), 'String'));
-                ylabel(sub, get(get(ax, 'YLabel'), 'String'));
-                if i == n
+
+                % X 轴标签（所有子图，含列名）
+                [xDsIdx, xColIdx] = obj.Session.GetXChannel(i);
+                if ~isempty(xDsIdx)
+                    ds = obj.Session.GetDataset(xDsIdx);
+                    dsName = obj.Session.GetDatasetName(xDsIdx);
+                    xlabel(sub, sprintf('%s / %s', dsName, ds.GetColumnName(xColIdx)));
+                else
                     xlabel(sub, 'Sample Index');
                 end
-                if numel(lines) > 1
-                    legend(sub, 'Location', 'best', 'Interpreter', 'none');
+
+                if numel(subAllLines) > 1
+                    legend(sub, subAllLines, 'Location', 'best', 'Interpreter', 'none');
                 end
             end
         end
@@ -923,7 +1199,7 @@ classdef TimeSeriesPresenter < BasePresenter
         function OnExportDatasetExcel(obj, ~, evt)
         % OnExportDatasetExcel 手动导出数据集为 Excel（_review.xlsx）
             d = evt.Data;
-            matPath = obj.Session.GetDatasetMatPath(d.datasetIdx);
+            matPath = obj.Session.GetDatasetPath(d.datasetIdx);
             if isempty(matPath) || ~exist(matPath, 'file')
                 obj.View.ShowError('数据集无对应 .mat 文件，无法导出');
                 return;
@@ -946,15 +1222,149 @@ classdef TimeSeriesPresenter < BasePresenter
         % ---- 状态栏 ----
 
         function OnAxesClicked(obj, ~, evt)
-        % OnAxesClicked 点击 axes：更新状态栏坐标
+        % OnAxesClicked 点击 axes：更新状态栏坐标 + 同步横轴/右Y轴菜单状态
             d = evt.Data;
             if d.axesIdx > 0
-                obj.StatusCallback(sprintf('  Axes %d  |  X = %.6g  |  Y = %.6g', ...
-                    d.axesIdx, d.x, d.y));
+                % 同步横轴/右Y轴状态到 View（供右键菜单使用）
+                obj.SyncViewAxisState(d.axesIdx);
+
+                % 状态栏显示
+                [xDsIdx, ~] = obj.Session.GetXChannel(d.axesIdx);
+                if ~isempty(xDsIdx)
+                    dsName = obj.Session.GetDatasetName(xDsIdx);
+                    obj.StatusCallback(sprintf('  Axes %d  |  X = %.6g (%s)  |  Y = %.6g', ...
+                        d.axesIdx, d.x, dsName, d.y));
+                else
+                    obj.StatusCallback(sprintf('  Axes %d  |  X = %.6g  |  Y = %.6g', ...
+                        d.axesIdx, d.x, d.y));
+                end
             else
                 obj.StatusCallback(' ');
             end
-            obj.RefreshChannelTable();
+            % 仅在聚焦 axes 变化时重建通道表（避免每次点击都重建）
+            if d.axesIdx ~= obj.LastFocusedAxes_
+                obj.LastFocusedAxes_ = d.axesIdx;
+                obj.RefreshChannelTable();
+            end
+        end
+
+        % ---- 共享 Helper ----
+
+        function PersistSampleRate(obj, datasetIdx, newRate)
+        % PersistSampleRate 回写采样率到 Session + .mat + JSON
+            obj.Session.UpdateSampleRate(datasetIdx, newRate);
+            matPath = obj.Session.GetDatasetPath(datasetIdx);
+            if ~isempty(matPath) && exist(matPath, 'file')
+                DataReaderFactory.UpdateSampleRateInMat(matPath, newRate);
+                [outDir, baseName] = fileparts(matPath);
+                jsonPath = fullfile(outDir, [baseName '_meta.json']);
+                if exist(jsonPath, 'file')
+                    try
+                        meta = jsondecode(fileread(jsonPath));
+                        meta.sample_rate = newRate;
+                        DataReaderFactory.WriteJson(jsonPath, meta);
+                    catch
+                    end
+                end
+            end
+        end
+
+        function PersistRenameChannel(obj, datasetIdx, colIdx, newName)
+        % PersistRenameChannel 重命名通道并回写 Session + .mat
+            ds = obj.Session.GetDataset(datasetIdx);
+            newNames = ds.ColumnNames;
+            newNames{colIdx} = newName;
+            newDs = ds.RebuildWithColumnNames(newNames);
+            obj.Session.UpdateDataset(datasetIdx, newDs);
+
+            matPath = obj.Session.GetDatasetPath(datasetIdx);
+            if ~isempty(matPath)
+                sa_column_names = newNames; %#ok<NASGU>
+                save(matPath, 'sa_column_names', '-append');
+                DataReaderFactory.UpdateColumnNamesInMeta(matPath, newNames);
+            end
+        end
+
+        function newRate = PromptSampleRate(~, dsName, defaultVal)
+        % PromptSampleRate 弹窗输入采样率，取消返回 []
+            if nargin < 3, defaultVal = ''; end
+            newRate = [];
+            dlg = dialog('Name', '设置采样率', 'Position', [400 350 340 160], ...
+                'WindowStyle', 'modal', 'Resize', 'off');
+            uicontrol('Parent', dlg, 'Style', 'text', ...
+                'String', sprintf('数据集: %s', dsName), ...
+                'FontSize', 10, ...
+                'Position', [14 120 312 22], 'HorizontalAlignment', 'left');
+            uicontrol('Parent', dlg, 'Style', 'text', ...
+                'String', '采样率 (Hz):', ...
+                'FontSize', 10, ...
+                'Position', [14 86 100 22], 'HorizontalAlignment', 'left');
+            editRate = uicontrol('Parent', dlg, 'Style', 'edit', ...
+                'String', defaultVal, 'FontSize', 10, ...
+                'Position', [120 84 196 26]);
+            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
+                'String', '确定', 'FontSize', 10, ...
+                'Position', [150 14 70 30], ...
+                'Callback', @(~, ~) doOk());
+            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
+                'String', '取消', 'FontSize', 10, ...
+                'Position', [240 14 70 30], ...
+                'Callback', @(~, ~) delete(dlg));
+            uiwait(dlg);
+            function doOk()
+                v = str2double(get(editRate, 'String'));
+                if ~isnan(v) && v > 0
+                    newRate = v;
+                    uiresume(dlg); delete(dlg);
+                else
+                    errordlg('采样率必须为正数', '输入错误', 'modal');
+                end
+            end
+        end
+
+        function result = PromptSliceRange(~, colName, totalRows, defaultStart, defaultLen)
+        % PromptSliceRange 弹窗输入切片范围，取消返回 []
+            result = [];
+            dlg = dialog('Name', sprintf('切片范围 - %s', colName), ...
+                'Position', [400 350 340 200], ...
+                'WindowStyle', 'modal', 'Resize', 'off');
+            uicontrol('Parent', dlg, 'Style', 'text', ...
+                'String', sprintf('共 %d 行', totalRows), ...
+                'FontSize', 10, ...
+                'Position', [14 162 312 22], 'HorizontalAlignment', 'left');
+            uicontrol('Parent', dlg, 'Style', 'text', ...
+                'String', '起点行号:', ...
+                'FontSize', 10, ...
+                'Position', [14 128 100 22], 'HorizontalAlignment', 'left');
+            editStart = uicontrol('Parent', dlg, 'Style', 'edit', ...
+                'String', num2str(defaultStart), 'FontSize', 10, ...
+                'Position', [120 126 196 26]);
+            uicontrol('Parent', dlg, 'Style', 'text', ...
+                'String', '长度:', ...
+                'FontSize', 10, ...
+                'Position', [14 92 100 22], 'HorizontalAlignment', 'left');
+            editLen = uicontrol('Parent', dlg, 'Style', 'edit', ...
+                'String', num2str(defaultLen), 'FontSize', 10, ...
+                'Position', [120 90 196 26]);
+            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
+                'String', '确定', 'FontSize', 10, ...
+                'Position', [150 14 70 30], ...
+                'Callback', @(~, ~) doOk());
+            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
+                'String', '取消', 'FontSize', 10, ...
+                'Position', [240 14 70 30], ...
+                'Callback', @(~, ~) delete(dlg));
+            uiwait(dlg);
+            function doOk()
+                s = round(str2double(get(editStart, 'String')));
+                l = round(str2double(get(editLen, 'String')));
+                if ~isnan(s) && ~isnan(l) && s >= 1 && l >= 1
+                    result = [s, l];
+                    uiresume(dlg); delete(dlg);
+                else
+                    errordlg('起点 ≥1, 长度 ≥1', '输入错误', 'modal');
+                end
+            end
         end
 
     end

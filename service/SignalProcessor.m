@@ -49,5 +49,53 @@ classdef SignalProcessor
             P1(2:end-1) = 2 * P1(2:end-1);
             f = sampleRate * (0:floor(N/2)) / N;
         end
+        function [psd, f] = ComputePSDWelch(signal, sampleRate, nfft)
+        % ComputePSDWelch Welch 平均周期图法 PSD 估计
+        %
+        % 分段加窗 → FFT → 平均，消除噪声毛刺
+        %
+        % 输入：
+        %   signal     - [N×1 double] 时域信号
+        %   sampleRate - double 采样率 (Hz)
+        %   nfft       - (可选) FFT 点数，默认自动选择
+        %
+        % 输出：
+        %   psd - [K×1 double] 功率谱密度 (单位²/Hz)
+        %   f   - [K×1 double] 频率轴 Hz
+
+            signal = signal(:);
+            N = length(signal);
+            if nargin < 3 || isempty(nfft)
+                nfft = min(N, 2^nextpow2(max(256, floor(N/4))));
+            end
+            win = hann(nfft, 'periodic');
+            noverlap = round(nfft * 0.5);
+            try
+                [psd, f] = pwelch(signal, win, noverlap, nfft, sampleRate);
+            catch
+                [psd, f] = periodogram(signal, [], [], sampleRate);
+            end
+            psd = psd(:);
+            f = f(:);
+        end
+
+        function [amp, f] = ComputeSpectrumWelch(signal, sampleRate, nfft)
+        % ComputeSpectrumWelch Welch 平均周期图法 → 单边幅值谱 (线性单位)
+        %
+        % 与 ComputeFFTSingleSided 输出格式一致，但更平滑
+        %
+        % 输入：
+        %   signal     - [N×1 double] 时域信号
+        %   sampleRate - double 采样率 (Hz)
+        %   nfft       - (可选) FFT 点数
+        %
+        % 输出：
+        %   amp - [K×1 double] 单边幅值谱 (线性单位)
+        %   f   - [K×1 double] 频率轴 Hz
+
+            [psd, f] = service.SignalProcessor.ComputePSDWelch(signal, sampleRate, nfft);
+            df = f(2) - f(1);
+            amp = sqrt(psd * df);
+        end
     end
 end

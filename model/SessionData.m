@@ -14,6 +14,8 @@ classdef SessionData < handle
         MaxAxes_        double    % axes 数量上限
         LastPaths_      cell      % 最近使用的路径
         AxesNormParams_     cell  % 每个 axes 的归一化参数 struct
+        AxesXChannel_       cell  % 每个 axes 的横轴引用 {struct|[], ...} struct: .DatasetIdx .ColIdx
+        AxesRightYChannel_  cell  % 每个 axes 的右Y轴引用 {{struct, struct, ...}|{}, ...} struct: .DatasetIdx .ColIdx
     end
 
     properties (Dependent, SetAccess = private)
@@ -43,6 +45,8 @@ classdef SessionData < handle
             obj.FocusedAxes_ = 1;
             obj.LastPaths_ = cell(1, 4);
             obj.AxesNormParams_ = {};
+            obj.AxesXChannel_ = {};
+            obj.AxesRightYChannel_ = {};
         end
 
         % ---- 数据集管理 ----
@@ -78,6 +82,32 @@ classdef SessionData < handle
                 end
                 obj.AxesData_{a}.Channels = chans(keep);
             end
+
+            % 清理横轴/右Y轴引用
+            for a = 1:length(obj.AxesXChannel_)
+                if ~isempty(obj.AxesXChannel_{a}) && obj.AxesXChannel_{a}.DatasetIdx == idx
+                    obj.AxesXChannel_{a} = [];
+                elseif ~isempty(obj.AxesXChannel_{a}) && obj.AxesXChannel_{a}.DatasetIdx > idx
+                    obj.AxesXChannel_{a}.DatasetIdx = obj.AxesXChannel_{a}.DatasetIdx - 1;
+                end
+            end
+            for a = 1:length(obj.AxesRightYChannel_)
+                refs = obj.AxesRightYChannel_{a};
+                if isempty(refs), continue; end
+                keep = {};
+                for r = 1:length(refs)
+                    if refs{r}.DatasetIdx == idx
+                        % 被删数据集的引用，跳过（不保留）
+                    elseif refs{r}.DatasetIdx > idx
+                        refs{r}.DatasetIdx = refs{r}.DatasetIdx - 1;
+                        keep{end+1} = refs{r}; %#ok<AGROW>
+                    else
+                        keep{end+1} = refs{r}; %#ok<AGROW>
+                    end
+                end
+                obj.AxesRightYChannel_{a} = keep;
+            end
+
             notify(obj, 'DatasetsUpdated');
         end
 
@@ -89,7 +119,10 @@ classdef SessionData < handle
             obj.AxesData_ = {};
             obj.AxesNormMode_ = {};
             obj.AxesNormParams_ = {};
+            obj.AxesXChannel_ = {};
+            obj.AxesRightYChannel_ = {};
             notify(obj, 'DatasetsUpdated');
+            notify(obj, 'ChannelsUpdated');
         end
 
         function UpdateDataset(obj, idx, newDataset)
@@ -164,15 +197,6 @@ classdef SessionData < handle
             end
         end
 
-        function matPath = GetDatasetMatPath(obj, idx)
-        % GetDatasetMatPath 获取数据集的 .mat 文件路径（复用 DatasetPaths_）
-            if idx >= 1 && idx <= length(obj.DatasetPaths_)
-                matPath = obj.DatasetPaths_{idx};
-            else
-                matPath = '';
-            end
-        end
-
         % ---- Axes 通道管理 ----
 
         function AddChannelToAxes(obj, axesIdx, datasetIdx, colIdx)
@@ -219,6 +243,15 @@ classdef SessionData < handle
             while length(obj.AxesNormMode_) < axesIdx
                 obj.AxesNormMode_{end+1} = 'none'; %#ok<AGROW>
             end
+            while length(obj.AxesXChannel_) < axesIdx
+                obj.AxesXChannel_{end+1} = []; %#ok<AGROW>
+            end
+            while length(obj.AxesRightYChannel_) < axesIdx
+                obj.AxesRightYChannel_{end+1} = {}; %#ok<AGROW>
+            end
+            while length(obj.AxesNormParams_) < axesIdx
+                obj.AxesNormParams_{end+1} = struct(); %#ok<AGROW>
+            end
 
             notify(obj, 'ChannelsUpdated');
         end
@@ -240,6 +273,25 @@ classdef SessionData < handle
                 end
             end
             obj.AxesData_{axesIdx}.Channels = chans(keep);
+
+            % 若被移除的通道是横轴或右Y轴引用，自动清除
+            if axesIdx <= length(obj.AxesXChannel_) && ~isempty(obj.AxesXChannel_{axesIdx})
+                ref = obj.AxesXChannel_{axesIdx};
+                if ref.DatasetIdx == datasetIdx && ref.ColIdx == colIdx
+                    obj.AxesXChannel_{axesIdx} = [];
+                end
+            end
+            if axesIdx <= length(obj.AxesRightYChannel_) && ~isempty(obj.AxesRightYChannel_{axesIdx})
+                refs = obj.AxesRightYChannel_{axesIdx};
+                newRefs = {};
+                for r = 1:length(refs)
+                    if ~(refs{r}.DatasetIdx == datasetIdx && refs{r}.ColIdx == colIdx)
+                        newRefs{end+1} = refs{r}; %#ok<AGROW>
+                    end
+                end
+                obj.AxesRightYChannel_{axesIdx} = newRefs;
+            end
+
             notify(obj, 'ChannelsUpdated');
         end
 
@@ -247,6 +299,13 @@ classdef SessionData < handle
         % ClearAxes 清空指定 axes 的所有通道
             if axesIdx >= 1 && axesIdx <= length(obj.AxesData_)
                 obj.AxesData_{axesIdx} = struct('Channels', {{}});
+            end
+            % 同步清除横轴/右Y轴引用
+            if axesIdx >= 1 && axesIdx <= length(obj.AxesXChannel_)
+                obj.AxesXChannel_{axesIdx} = [];
+            end
+            if axesIdx >= 1 && axesIdx <= length(obj.AxesRightYChannel_)
+                obj.AxesRightYChannel_{axesIdx} = {};
             end
             notify(obj, 'ChannelsUpdated');
         end
@@ -270,6 +329,12 @@ classdef SessionData < handle
             while length(obj.AxesNormMode_) < obj.MaxAxes_
                 obj.AxesNormMode_{end+1} = 'none'; %#ok<AGROW>
             end
+            while length(obj.AxesXChannel_) < obj.MaxAxes_
+                obj.AxesXChannel_{end+1} = []; %#ok<AGROW>
+            end
+            while length(obj.AxesRightYChannel_) < obj.MaxAxes_
+                obj.AxesRightYChannel_{end+1} = {}; %#ok<AGROW>
+            end
         end
 
         function RemoveAxes(obj, idx)
@@ -282,6 +347,12 @@ classdef SessionData < handle
             end
             if idx >= 1 && idx <= length(obj.AxesNormParams_)
                 obj.AxesNormParams_{idx} = struct();
+            end
+            if idx >= 1 && idx <= length(obj.AxesXChannel_)
+                obj.AxesXChannel_{idx} = [];
+            end
+            if idx >= 1 && idx <= length(obj.AxesRightYChannel_)
+                obj.AxesRightYChannel_{idx} = {};
             end
             notify(obj, 'ChannelsUpdated');
         end
@@ -385,6 +456,73 @@ classdef SessionData < handle
                 params = obj.AxesNormParams_{axesIdx};
             else
                 params = struct();
+            end
+        end
+
+        % ---- 横轴/右Y轴引用 ----
+
+        function SetXChannel(obj, axesIdx, datasetIdx, colIdx)
+        % SetXChannel 设置 axes 的横轴通道引用
+            if axesIdx < 1 || axesIdx > obj.MaxAxes_
+                return;
+            end
+            while length(obj.AxesXChannel_) < axesIdx
+                obj.AxesXChannel_{end+1} = []; %#ok<AGROW>
+            end
+            obj.AxesXChannel_{axesIdx} = struct('DatasetIdx', datasetIdx, 'ColIdx', colIdx);
+        end
+
+        function ClearXChannel(obj, axesIdx)
+        % ClearXChannel 恢复 axes 默认横轴（采样索引）
+            if axesIdx >= 1 && axesIdx <= length(obj.AxesXChannel_)
+                obj.AxesXChannel_{axesIdx} = [];
+            end
+        end
+
+        function [datasetIdx, colIdx] = GetXChannel(obj, axesIdx)
+        % GetXChannel 查询 axes 的横轴引用，无则返回空
+            datasetIdx = [];
+            colIdx = [];
+            if axesIdx >= 1 && axesIdx <= length(obj.AxesXChannel_) && ~isempty(obj.AxesXChannel_{axesIdx})
+                ref = obj.AxesXChannel_{axesIdx};
+                datasetIdx = ref.DatasetIdx;
+                colIdx = ref.ColIdx;
+            end
+        end
+
+        function SetRightYChannel(obj, axesIdx, datasetIdx, colIdx)
+        % SetRightYChannel 追加 axes 的右Y轴通道引用（支持多个）
+            if axesIdx < 1 || axesIdx > obj.MaxAxes_
+                return;
+            end
+            while length(obj.AxesRightYChannel_) < axesIdx
+                obj.AxesRightYChannel_{end+1} = {}; %#ok<AGROW>
+            end
+            if isempty(obj.AxesRightYChannel_{axesIdx})
+                obj.AxesRightYChannel_{axesIdx} = {};
+            end
+            % 检查重复
+            refs = obj.AxesRightYChannel_{axesIdx};
+            for i = 1:length(refs)
+                if refs{i}.DatasetIdx == datasetIdx && refs{i}.ColIdx == colIdx
+                    return; % 已存在
+                end
+            end
+            obj.AxesRightYChannel_{axesIdx}{end+1} = struct('DatasetIdx', datasetIdx, 'ColIdx', colIdx);
+        end
+
+        function ClearRightYChannel(obj, axesIdx)
+        % ClearRightYChannel 恢复 axes 单Y轴模式（清除全部右Y通道）
+            if axesIdx >= 1 && axesIdx <= length(obj.AxesRightYChannel_)
+                obj.AxesRightYChannel_{axesIdx} = {};
+            end
+        end
+
+        function refs = GetRightYChannel(obj, axesIdx)
+        % GetRightYChannel 查询 axes 的右Y轴引用列表，无则返回空 cell
+            refs = {};
+            if axesIdx >= 1 && axesIdx <= length(obj.AxesRightYChannel_) && ~isempty(obj.AxesRightYChannel_{axesIdx})
+                refs = obj.AxesRightYChannel_{axesIdx};
             end
         end
 
