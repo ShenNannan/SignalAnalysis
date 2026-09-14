@@ -782,11 +782,7 @@ classdef TimeSeriesPresenter < BasePresenter
                     case 'psd'
                         [cumRms, freq, totalRms] = SignalProcessor.ComputeCumulativeRMS(sig, sampleRate);
                         label = sprintf('%s (RMS=%.4f)', chanLabel, totalRms);
-                        if abs(freq(1)) < eps
-                            semilogx(ax2, freq(2:end), cumRms(2:end), 'Color', chanColor, 'DisplayName', label);
-                        else
-                            semilogx(ax2, freq, cumRms, 'Color', chanColor, 'DisplayName', label);
-                        end
+                        semilogx(ax2, freq(2:end), cumRms(2:end), 'Color', chanColor, 'DisplayName', label);
                 end
             end
 
