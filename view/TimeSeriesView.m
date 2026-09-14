@@ -13,6 +13,7 @@ classdef TimeSeriesView < handle
         AxesCount_      % double 当前 axes 数量
         LayoutMode_     % char 'single' | 'dual'
         FocusedAxes_    % double 当前聚焦 axes 索引
+        SpectrumDropdown
         NormDropdown    % uidropdown 归一化模式
         LoadingDlg_     % uiprogressdlg
     end
@@ -47,8 +48,7 @@ classdef TimeSeriesView < handle
         ExportExcelClicked      % 载荷 struct('datasetIdx',..)
         SetSampleRateClicked    % 载荷 struct('datasetIdx',..)
         ClearPlotClicked
-        FftClicked
-        PsdClicked
+        SpectrumClicked
         NormClicked             % 载荷 struct('mode',..)
         CalcClicked
         AxesClicked             % 载荷 struct('axesIdx',..,'x',..,'y',..)
@@ -391,7 +391,7 @@ classdef TimeSeriesView < handle
         function BuildToolbar(obj, parent)
             sq = 28;  % 小方按钮边长
             tb = uigridlayout(parent, [1 12], ...
-                'ColumnWidth', {sq, sq, sq, sq, 60, 48, '1x', 40, 40, 90, 44, 44}, ...
+                'ColumnWidth', {sq, sq, sq, sq, 60, 48, '1x', 80, 44, 90, 44, 44}, ...
                 'RowHeight', {sq}, ...
                 'ColumnSpacing', 4, ...
                 'Padding', [4 4 4 4]);
@@ -414,10 +414,11 @@ classdef TimeSeriesView < handle
             % 弹性间隔（推挤右侧数据操作按钮右对齐）
             uipanel(tb, 'Visible', 'off', 'BorderType', 'none');
             % --- 右侧：数据操作（以 Calc 为右起点）---
-            uibutton(tb, 'push', 'Text', 'FFT', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'FftClicked'));
-            uibutton(tb, 'push', 'Text', 'PSD', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'PsdClicked'));
+            obj.SpectrumDropdown = uidropdown(tb, ...
+                'Items', {'FFT', 'PSD'}, ...
+                'Value', 'FFT', 'Tooltip', '选择频谱分析模式');
+            uibutton(tb, 'push', 'Text', '频谱', ...
+                'ButtonPushedFcn', @(s, e) notify(obj, 'SpectrumClicked'));
             obj.NormDropdown = uidropdown(tb, ...
                 'Items', {'None', 'Min-Max', 'Z-Score', 'Mean Zero'}, ...
                 'Value', 'None');
@@ -864,24 +865,15 @@ classdef TimeSeriesView < handle
             fig = uifigure('Name', 'Spectrum Analysis', ...
                 'NumberTitle', 'off', 'Position', [200 150 900 720]);
 
-            g = uigridlayout(fig, [3 1], 'RowHeight', {36, '1x', '1x'}, ...
+            g = uigridlayout(fig, [2 1], 'RowHeight', {'1x', '1x'}, ...
                 'Padding', [6 6 6 6], 'RowSpacing', 4);
 
-            toolbar = uigridlayout(g, [1 2], 'ColumnWidth', {'fit', '1x'}, ...
-                'Padding', [0 0 0 0]);
-            toolbar.Layout.Row = 1;
-            uilabel(toolbar, 'Text', 'Mode:', 'VerticalAlignment', 'center');
-            modeDropdown = uidropdown(toolbar, ...
-                'Items', {'FFT 幅值谱', 'Welch PSD (平滑)', '累积 RMS'}, ...
-                'Value', 'FFT 幅值谱');
-
             axTime = uiaxes(g);
-            axTime.Layout.Row = 2;
+            axTime.Layout.Row = 1;
             axFreq = uiaxes(g);
-            axFreq.Layout.Row = 3;
+            axFreq.Layout.Row = 2;
 
-            h = struct('fig', fig, 'axTime', axTime, 'axFreq', axFreq, ...
-                       'modeDropdown', modeDropdown);
+            h = struct('fig', fig, 'axTime', axTime, 'axFreq', axFreq);
         end
 
         function h = CreateCalcDialog(obj, channelList)

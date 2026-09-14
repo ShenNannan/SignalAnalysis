@@ -31,8 +31,7 @@ classdef TimeSeriesPresenter < BasePresenter
             obj.TrackListener(addlistener(view, 'ExportClicked', @obj.OnExportFigure));
             obj.TrackListener(addlistener(view, 'ExportExcelClicked', @obj.OnExportDatasetExcel));
             obj.TrackListener(addlistener(view, 'ClearPlotClicked', @obj.OnClearPlot));
-            obj.TrackListener(addlistener(view, 'FftClicked', @(s, e) obj.ShowSpectrumPopup('fft')));
-            obj.TrackListener(addlistener(view, 'PsdClicked', @(s, e) obj.ShowSpectrumPopup('psd')));
+            obj.TrackListener(addlistener(view, 'SpectrumClicked', @obj.OnSpectrumClicked));
             obj.TrackListener(addlistener(view, 'NormClicked', @obj.OnNormalize));
             obj.TrackListener(addlistener(view, 'CalcClicked', @obj.OnCalcChannel));
             obj.TrackListener(addlistener(view, 'RenameChannelClicked', @obj.OnRenameChannel));
@@ -729,6 +728,16 @@ classdef TimeSeriesPresenter < BasePresenter
 
         % ---- FFT/PSD 弹窗 ----
 
+        function OnSpectrumClicked(obj, ~, ~)
+        % OnSpectrumClicked 读取工具栏下拉模式，触发频谱弹窗
+            mode = obj.View.SpectrumDropdown.Value;
+            if strcmp(mode, 'FFT')
+                obj.ShowSpectrumPopup('fft');
+            else
+                obj.ShowSpectrumPopup('psd');
+            end
+        end
+
         function ShowSpectrumPopup(obj, analysisType)
         % ShowSpectrumPopup uifigure 弹窗：原始信号 + FFT/PSD
             axIdx = obj.View.GetFocusedAxes();
@@ -791,6 +800,7 @@ classdef TimeSeriesPresenter < BasePresenter
             end
 
             hold(ax1, 'off'); hold(ax2, 'off');
+            set(ax2, 'XScale', 'log');
             if hasXChannel
                 dsName = obj.Session.GetDatasetName(xDsIdx);
                 ds = obj.Session.GetDataset(xDsIdx);
