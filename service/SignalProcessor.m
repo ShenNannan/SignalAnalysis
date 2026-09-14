@@ -27,9 +27,6 @@ classdef SignalProcessor
             df = f(2) - f(1);
             cumRms = sqrt(cumsum(pxx) * df);
             totalRms = cumRms(end);
-            % 原点 (0, 0)
-            cumRms = [0; cumRms];
-            f = [0; f];
         end
 
         function [rmsAmp, f, totalRms] = ComputeRMSSpectrum(signal, sampleRate)
