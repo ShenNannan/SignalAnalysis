@@ -83,19 +83,22 @@ classdef SignalProcessor
         % ComputeSpectrumWelch Welch 平均周期图法 → 单边幅值谱 (线性单位)
         %
         % 与 ComputeFFTSingleSided 输出格式一致，但更平滑
-        %
-        % 输入：
-        %   signal     - [N×1 double] 时域信号
-        %   sampleRate - double 采样率 (Hz)
-        %   nfft       - (可选) FFT 点数
-        %
-        % 输出：
-        %   amp - [K×1 double] 单边幅值谱 (线性单位)
-        %   f   - [K×1 double] 频率轴 Hz
 
-            [psd, f] = service.SignalProcessor.ComputePSDWelch(signal, sampleRate, nfft);
+            signal = signal(:);
+            N = length(signal);
+            if nargin < 3 || isempty(nfft)
+                nfft = min(N, 2^nextpow2(max(256, floor(N/4))));
+            end
+            win = hann(nfft, 'periodic');
+            noverlap = round(nfft * 0.5);
+            try
+                [psd, f] = pwelch(signal, win, noverlap, nfft, sampleRate);
+            catch
+                [psd, f] = periodogram(signal, [], [], sampleRate);
+            end
             df = f(2) - f(1);
-            amp = sqrt(psd * df);
+            amp = sqrt(psd .* df);
+            amp = amp(:); f = f(:);
         end
     end
 end

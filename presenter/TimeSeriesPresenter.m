@@ -118,7 +118,8 @@ classdef TimeSeriesPresenter < BasePresenter
                 end
                 ds = DataReaderFactory.LoadStandard(results{i}.matPath);
                 % 优先使用 .mat 中保存的自定义数据集名
-                dsName = obj.LoadDatasetName(results{i}.matPath, results{i}.name);
+                dsName = DataReaderFactory.LoadDatasetName(results{i}.matPath);
+                if isempty(dsName), dsName = results{i}.name; end
                 obj.Session.AddDataset(ds, dsName, results{i}.matPath);
                 added = added + 1;
             end
@@ -271,11 +272,6 @@ classdef TimeSeriesPresenter < BasePresenter
                     xSig = (0:length(sig)-1)';
                 end
             end
-        end
-
-        function idx = ChannelColorIndex(~, datasetIdx, colIdx, nColors)
-        % ChannelColorIndex 通道→颜色索引（基于 datasetIdx+colIdx 哈希，与序号无关）
-            idx = mod((datasetIdx - 1) * 7 + colIdx, nColors) + 1;
         end
 
         function chan = FindChannelInList(~, chans, datasetIdx, colIdx)
@@ -607,7 +603,7 @@ classdef TimeSeriesPresenter < BasePresenter
             ds = obj.Session.GetDataset(d.datasetIdx);
             colName = ds.GetColumnName(d.colIdx);
 
-            result = obj.PromptSliceRange(colName, totalRows, currentRange(1), currentLen);
+            result = obj.View.ShowSliceRangeDialog(colName, totalRows, currentRange(1), currentLen);
             if isempty(result), return; end
             startRow = result(1);
             segLen = result(2);
@@ -662,7 +658,7 @@ classdef TimeSeriesPresenter < BasePresenter
                 return;
             end
 
-            obj.PersistRenameChannel(d.datasetIdx, d.colIdx, newName);
+            obj.RenameChannel(d.datasetIdx, d.colIdx, newName);
             obj.RefreshChannelTable();
             obj.RenderAxes(obj.View.GetFocusedAxes());
         end
@@ -677,7 +673,7 @@ classdef TimeSeriesPresenter < BasePresenter
                 return;
             end
 
-            obj.PersistRenameChannel(d.datasetIdx, d.colIdx, newName);
+            obj.RenameChannel(d.datasetIdx, d.colIdx, newName);
             obj.RefreshChannelTable();
             obj.RenderAxes(obj.View.GetFocusedAxes());
         end
@@ -694,24 +690,11 @@ classdef TimeSeriesPresenter < BasePresenter
 
             matPath = obj.Session.GetDatasetPath(d.datasetIdx);
             if ~isempty(matPath)
-                sa_dataset_name = newName; %#ok<NASGU>
-                save(matPath, 'sa_dataset_name', '-append');
+                DataReaderFactory.UpdateDatasetNameInMat(matPath, newName);
             end
 
             obj.RefreshChannelTable();
             obj.RenderAxes(obj.View.GetFocusedAxes());
-        end
-
-        function name = LoadDatasetName(~, matPath, fallback)
-        % LoadDatasetName 从 .mat 读取 sa_dataset_name，无则返回 fallback
-            name = fallback;
-            try
-                S = load(matPath, 'sa_dataset_name');
-                if isfield(S, 'sa_dataset_name') && ~isempty(S.sa_dataset_name)
-                    name = regexprep(strtrim(S.sa_dataset_name), '^[▼▶]\s*', '');
-                end
-            catch
-            end
         end
 
         function sampleRate = EnsureSampleRate(obj, datasetIdx)
@@ -722,9 +705,9 @@ classdef TimeSeriesPresenter < BasePresenter
                 return;
             end
             dsName = obj.Session.GetDatasetName(datasetIdx);
-            newRate = obj.PromptSampleRate(dsName);
+            newRate = obj.View.ShowSampleRateDialog(dsName);
             if isempty(newRate), return; end
-            obj.PersistSampleRate(datasetIdx, newRate);
+            obj.SetSampleRate(datasetIdx, newRate);
             sampleRate = newRate;
         end
 
@@ -736,9 +719,9 @@ classdef TimeSeriesPresenter < BasePresenter
             dsName = obj.Session.GetDatasetName(d.datasetIdx);
             default = '';
             if ~isempty(currentRate), default = num2str(currentRate); end
-            newRate = obj.PromptSampleRate(dsName, default);
+            newRate = obj.View.ShowSampleRateDialog(dsName, default);
             if isempty(newRate), return; end
-            obj.PersistSampleRate(d.datasetIdx, newRate);
+            obj.SetSampleRate(d.datasetIdx, newRate);
             obj.RefreshChannelTable();
             obj.RenderAxes(obj.View.GetFocusedAxes());
             obj.StatusCallback(sprintf('  %s 采样率 = %g Hz', dsName, newRate));
@@ -756,8 +739,6 @@ classdef TimeSeriesPresenter < BasePresenter
             end
 
             colors = {'b', 'r', 'g', 'c', 'm', 'k'};
-
-            % 检查自定义横轴
             [xDsIdx, xColIdx] = obj.Session.GetXChannel(axIdx);
             hasXChannel = ~isempty(xDsIdx);
             xRaw = [];
@@ -765,63 +746,30 @@ classdef TimeSeriesPresenter < BasePresenter
                 xRaw = obj.Session.GetDataset(xDsIdx).GetColumn(xColIdx);
             end
 
-            fig = uifigure('Name', sprintf('Spectrum - %s', upper(analysisType)), ...
-                'NumberTitle', 'off', 'Position', [200 150 900 700]);
-            obj.TrackPopup(fig);
-            fig.CloseRequestFcn = @(s, e) obj.RemovePopup(fig);
+            % View 创建弹窗 UI
+            h = obj.View.CreateSpectrumPopup();
+            obj.TrackPopup(h.fig);
+            h.fig.CloseRequestFcn = @(s, e) obj.RemovePopup(h.fig);
 
-            g = uigridlayout(fig, [2 1], 'RowHeight', {'1x', '1x'}, ...
-                'Padding', [6 6 6 6], 'RowSpacing', 4);
-            ax1 = uiaxes(g);
-            ax1.Layout.Row = 1;
-            ax2 = uiaxes(g);
-            ax2.Layout.Row = 2;
-            hold(ax1, 'on');
-            hold(ax2, 'on');
+            ax1 = h.axTime; ax2 = h.axFreq;
+            hold(ax1, 'on'); hold(ax2, 'on');
 
             nPlotted = 0;
             for c = 1:length(chans)
                 chan = chans{c};
-
                 sampleRate = obj.EnsureSampleRate(chan.DatasetIdx);
                 if isempty(sampleRate) || isnan(sampleRate) || sampleRate <= 0
                     continue;
                 end
 
-                if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
-                    sig = ChannelOperations.ApplySlice(chan.Data, chan.SliceRange(1), chan.SliceRange(2));
-                else
-                    sig = chan.Data;
-                end
-                % c 本身就是 chans 列表的索引，与 ComputeNormParams 的 channelStats 对齐
+                [sig, xSig] = ChannelOperations.SliceAndAlign(...
+                    chan.Data, xRaw, chan.SliceRange, hasXChannel);
                 sig = obj.ApplyNorm(axIdx, c, sig);
-
-                % 横轴数据
-                if hasXChannel && ~isempty(xRaw)
-                    if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
-                        xSig = ChannelOperations.ApplySlice(xRaw, chan.SliceRange(1), chan.SliceRange(2));
-                    else
-                        xSig = xRaw;
-                    end
-                    n = min(length(xSig), length(sig));
-                    xSig = xSig(1:n); sig = sig(1:n);
-                else
-                    xSig = (0:length(sig)-1)';
-                end
 
                 chanColor = colors{obj.ChannelColorIndex(chan.DatasetIdx, chan.ColIdx, length(colors))};
                 chanLabel = chan.Label;
                 nPlotted = nPlotted + 1;
-
                 plot(ax1, xSig, sig, 'Color', chanColor, 'DisplayName', chanLabel);
-
-                % 调试输出（排查 FFT/PSD 数据源）
-                fprintf('[FFT-DEBUG] chan=%s  N=%d  Fs=%g  norm=%s  slice=%s  hasNaN=%d  hasInf=%d  range=[%g, %g]\n', ...
-                    chanLabel, length(sig), sampleRate, ...
-                    obj.Session.GetAxesNormMode(axIdx), ...
-                    mat2str(chan.SliceRange), ...
-                    any(isnan(sig)), any(isinf(sig)), ...
-                    min(sig), max(sig));
 
                 switch lower(analysisType)
                     case 'fft'
@@ -834,8 +782,6 @@ classdef TimeSeriesPresenter < BasePresenter
                     case 'psd'
                         [cumRms, freq, totalRms] = SignalProcessor.ComputeCumulativeRMS(sig, sampleRate);
                         label = sprintf('%s (RMS=%.4f)', chanLabel, totalRms);
-                        fprintf('[PSD-DEBUG]   freq=[%g, %g] Hz  df=%g Hz  totalRMS=%.4g\n', ...
-                            freq(2), freq(end), freq(2)-freq(1), totalRms);
                         if abs(freq(1)) < eps
                             semilogx(ax2, freq(2:end), cumRms(2:end), 'Color', chanColor, 'DisplayName', label);
                         else
@@ -844,8 +790,7 @@ classdef TimeSeriesPresenter < BasePresenter
                 end
             end
 
-            hold(ax1, 'off');
-            hold(ax2, 'off');
+            hold(ax1, 'off'); hold(ax2, 'off');
             if hasXChannel
                 dsName = obj.Session.GetDatasetName(xDsIdx);
                 ds = obj.Session.GetDataset(xDsIdx);
@@ -856,8 +801,7 @@ classdef TimeSeriesPresenter < BasePresenter
             ylabel(ax1, 'Amplitude');
             title(ax1, 'Time Domain Signal');
             grid(ax1, 'on');
-            ax2.XScale = 'log';
-            ax2.YScale = 'log';
+            ax2.XScale = 'log'; ax2.YScale = 'log';
             xlabel(ax2, 'Frequency (Hz)');
             grid(ax2, 'on');
             if strcmpi(analysisType, 'fft')
@@ -898,88 +842,47 @@ classdef TimeSeriesPresenter < BasePresenter
                 return;
             end
 
-            opTypes = {'A + B', 'A - B', 'A × B', 'A ÷ B', ...
-                       'diff(A)', 'cumsum(A)', '|A|', 'A²', '√A', ...
-                       'log₁₀(A)', 'detrend(A)', 'RMS(A)', 'smooth(A)'};
             opKeys  = {'add', 'sub', 'mul', 'div', ...
                        'diff', 'cumsum', 'abs', 'square', 'sqrt', ...
                        'log10', 'detrend', 'rms', 'smooth'};
 
-            dlg = uifigure('Name', '通道运算', 'NumberTitle', 'off', ...
-                'Position', [400 260 380 440], 'Resize', 'off');
+            % View 创建对话框 UI
+            h = obj.View.CreateCalcDialog(channelList);
+            dlg = h.fig;
             obj.TrackPopup(dlg);
             dlg.CloseRequestFcn = @(s, e) obj.RemovePopup(dlg);
 
-            g = uigridlayout(dlg, [10 2], ...
-                'RowHeight', [repmat({28}, 1, 9), {36}], ...
-                'ColumnWidth', {110, '1x'}, ...
-                'Padding', [10 10 10 10], 'RowSpacing', 5);
-
-            uilabel(g, 'Text', '运算类型:');
-            opPopup = uidropdown(g, 'Items', opTypes, 'Value', opTypes{1}, ...
-                'ValueChangedFcn', @(s, e) updateOpType());
-            uilabel(g, 'Text', '通道A:');
-            popupA = uidropdown(g, 'Items', channelList, 'Value', channelList{1}, ...
-                'ValueChangedFcn', @(s, e) updateOpType());
-            uilabel(g, 'Text', '通道B:');
-            popupB = uidropdown(g, 'Items', channelList, 'Value', channelList{1}, ...
-                'Enable', 'off');
-            uilabel(g, 'Text', 'A 起点:');
-            editA1 = uieditfield(g, 'numeric', 'Value', 1, 'Limits', [1 inf]);
-            uilabel(g, 'Text', 'A 长度:');
-            editA2 = uieditfield(g, 'numeric', 'Value', 1, 'Limits', [1 inf]);
-            uilabel(g, 'Text', 'B 起点:');
-            editB1 = uieditfield(g, 'numeric', 'Value', 1, 'Limits', [1 inf], 'Enable', 'off');
-            uilabel(g, 'Text', 'B 长度:');
-            editB2 = uieditfield(g, 'numeric', 'Value', 1, 'Limits', [1 inf], 'Enable', 'off');
-            winLabel = uilabel(g, 'Text', '窗口大小:');
-            winLabel.Visible = 'off';
-            editWin = uieditfield(g, 'numeric', 'Value', 10, 'Limits', [2 inf]);
-            editWin.Visible = 'off';
-            uilabel(g, 'Text', '结果名称:');
-            editName = uieditfield(g, 'text', 'Value', '');
-            btnGrid = uigridlayout(g, [1 2], 'ColumnWidth', {'1x', '1x'}, ...
-                'ColumnSpacing', 8, 'RowHeight', {28}, 'Padding', [0 0 0 0]);
-            btnGrid.Layout.Column = [1 2];
-            uibutton(btnGrid, 'push', 'Text', '确定', ...
-                'VerticalAlignment', 'bottom', ...
-                'ButtonPushedFcn', @(s, e) doCalc());
-            uibutton(btnGrid, 'push', 'Text', '取消', ...
-                'VerticalAlignment', 'bottom', ...
-                'ButtonPushedFcn', @(s, e) obj.RemovePopup(dlg));
+            % 绑定回调
+            h.opPopup.ValueChangedFcn = @(s, e) updateOpType();
+            h.popupA.ValueChangedFcn = @(s, e) updateOpType();
+            h.btnOk.ButtonPushedFcn = @(s, e) doCalc();
+            h.btnCancel.ButtonPushedFcn = @(s, e) obj.RemovePopup(dlg);
 
             updateOpType();
 
             function updateOpType()
-                val = find(strcmp(opPopup.Value, opTypes), 1);
+                val = find(strcmp(h.opPopup.Value, h.opPopup.Items), 1);
                 if isempty(val), val = 1; end
                 key = opKeys{val};
                 isDual = any(strcmp(key, {'add', 'sub', 'mul', 'div'}));
                 isSmooth = strcmp(key, 'smooth');
 
                 if isDual
-                    popupB.Enable = 'on';
-                    editB1.Enable = 'on';
-                    editB2.Enable = 'on';
+                    h.popupB.Enable = 'on'; h.editB1.Enable = 'on'; h.editB2.Enable = 'on';
                 else
-                    popupB.Enable = 'off';
-                    editB1.Enable = 'off';
-                    editB2.Enable = 'off';
+                    h.popupB.Enable = 'off'; h.editB1.Enable = 'off'; h.editB2.Enable = 'off';
                 end
-
                 if isSmooth
-                    winLabel.Visible = 'on';
-                    editWin.Visible = 'on';
+                    h.winLabel.Visible = 'on'; h.editWin.Visible = 'on';
                 else
-                    winLabel.Visible = 'off';
-                    editWin.Visible = 'off';
+                    h.winLabel.Visible = 'off'; h.editWin.Visible = 'off';
                 end
 
-                idxA = find(strcmp(popupA.Value, channelList), 1);
+                idxA = find(strcmp(h.popupA.Value, channelList), 1);
                 if isempty(idxA), idxA = 1; end
                 nameA = strrep(channelList{idxA}, ' > ', '_');
                 if isDual
-                    idxB = find(strcmp(popupB.Value, channelList), 1);
+                    idxB = find(strcmp(h.popupB.Value, channelList), 1);
                     if isempty(idxB), idxB = 1; end
                     nameB = strrep(channelList{idxB}, ' > ', '_');
                     ops = {'+', '-', '×', '÷'};
@@ -988,94 +891,77 @@ classdef TimeSeriesPresenter < BasePresenter
                     opNames = {'diff', 'cumsum', 'abs', 'sq', 'sqrt', 'log10', 'detrend', 'rms', 'smooth'};
                     defaultName = sprintf('%s(%s)', opNames{val - 4}, nameA);
                 end
-                if length(defaultName) > 63
-                    defaultName = defaultName(1:63);
-                end
-                editName.Value = defaultName;
+                if length(defaultName) > 63, defaultName = defaultName(1:63); end
+                h.editName.Value = defaultName;
 
                 if idxA <= size(channelMap, 1)
                     dsA = obj.Session.GetDataset(channelMap(idxA, 1));
-                    editA2.Value = max(1, dsA.RowCount);
+                    h.editA2.Value = max(1, dsA.RowCount);
                 end
                 if isDual && idxB <= size(channelMap, 1)
                     dsB = obj.Session.GetDataset(channelMap(idxB, 1));
-                    editB2.Value = max(1, dsB.RowCount);
+                    h.editB2.Value = max(1, dsB.RowCount);
                 end
             end
 
             function doCalc()
                 try
-                    val = find(strcmp(opPopup.Value, opTypes), 1);
+                    val = find(strcmp(h.opPopup.Value, h.opPopup.Items), 1);
                     if isempty(val), val = 1; end
                     key = opKeys{val};
                     isDual = any(strcmp(key, {'add', 'sub', 'mul', 'div'}));
 
-                    idxA = find(strcmp(popupA.Value, channelList), 1);
+                    idxA = find(strcmp(h.popupA.Value, channelList), 1);
                     if isempty(idxA), idxA = 1; end
                     dsIdxA = channelMap(idxA, 1);
-                    colIdxA = channelMap(idxA, 2);
                     dsA = obj.Session.GetDataset(dsIdxA);
-                    dataA = dsA.GetColumn(colIdxA);
-
-                    a1 = round(editA1.Value);
-                    aLen = round(editA2.Value);
-                    a1 = max(1, a1);
-                    aLen = max(1, min(aLen, size(dataA, 1) - a1 + 1));
+                    dataA = dsA.GetColumn(channelMap(idxA, 2));
+                    a1 = max(1, round(h.editA1.Value));
+                    aLen = max(1, min(round(h.editA2.Value), size(dataA,1) - a1 + 1));
                     dataA = dataA(a1 : a1 + aLen - 1);
 
                     params = struct();
                     if isDual
-                        idxB = find(strcmp(popupB.Value, channelList), 1);
+                        idxB = find(strcmp(h.popupB.Value, channelList), 1);
                         if isempty(idxB), idxB = 1; end
                         dsB = obj.Session.GetDataset(channelMap(idxB, 1));
                         dataB = dsB.GetColumn(channelMap(idxB, 2));
-                        b1 = round(editB1.Value);
-                        bLen = round(editB2.Value);
-                        b1 = max(1, b1);
-                        bLen = max(1, min(bLen, size(dataB, 1) - b1 + 1));
+                        b1 = max(1, round(h.editB1.Value));
+                        bLen = max(1, min(round(h.editB2.Value), size(dataB,1) - b1 + 1));
                         dataB = dataB(b1 : b1 + bLen - 1);
-
                         if length(dataA) ~= length(dataB)
-                            obj.View.ShowError(sprintf('窗口长度不一致: A=%d, B=%d', ...
-                                length(dataA), length(dataB)));
+                            obj.View.ShowError(sprintf('窗口长度不一致: A=%d, B=%d', length(dataA), length(dataB)));
                             return;
                         end
                     else
                         dataB = [];
                         switch key
-                            case 'diff'
-                                params.sampleRate = obj.RequireSampleRateForCalc(dsIdxA);
-                            case 'cumsum'
+                            case {'diff', 'cumsum'}
                                 params.sampleRate = obj.RequireSampleRateForCalc(dsIdxA);
                             case 'smooth'
-                                params.windowSize = round(editWin.Value);
+                                params.windowSize = round(h.editWin.Value);
                         end
                     end
 
                     if strcmp(key, 'rms')
                         rmsVal = ChannelOperations.Compute('rms', dataA, [], params);
-                        uialert(dlg, sprintf('RMS = %.6g', rmsVal), 'RMS', 'Icon', 'info');
+                        obj.View.ShowInfo(sprintf('RMS = %.6g', rmsVal));
                         obj.RemovePopup(dlg);
                         return;
                     end
 
                     result = ChannelOperations.Compute(key, dataA, dataB, params);
-
-                    resultName = strtrim(editName.Value);
+                    resultName = strtrim(h.editName.Value);
                     if isempty(resultName)
                         resultName = sprintf('calc_%d', obj.Session.DatasetCount + 1);
                     end
 
-                    tempDir = tempname;
-                    mkdir(tempDir);
-                    matPath = DataReaderFactory.SaveStandard( ...
-                        result, {resultName}, tempDir, resultName, 'calc', 'calc');
+                    tempDir = tempname; mkdir(tempDir);
+                    matPath = DataReaderFactory.SaveStandard(result, {resultName}, tempDir, resultName, 'calc', 'calc');
                     newDs = DataReaderFactory.LoadStandard(matPath);
                     obj.Session.AddDataset(newDs, resultName, matPath);
                     obj.RefreshChannelTable();
-
                     obj.RemovePopup(dlg);
-                    fprintf('[Calc] %s → 新数据集 (%d×%d)\n', resultName, size(result, 1), size(result, 2));
                 catch e
                     obj.View.ShowError(sprintf('运算失败:\n%s', e.message));
                 end
@@ -1112,7 +998,7 @@ classdef TimeSeriesPresenter < BasePresenter
             if n == 0
                 return;
             end
-            fig = figure('Name', 'Export', 'NumberTitle', 'off');
+            fig = obj.View.CreateExportFigure('Export');
             obj.TrackPopup(fig);
             fig.CloseRequestFcn = @(s, e) obj.RemovePopup(fig);
 
@@ -1250,27 +1136,17 @@ classdef TimeSeriesPresenter < BasePresenter
 
         % ---- 共享 Helper ----
 
-        function PersistSampleRate(obj, datasetIdx, newRate)
-        % PersistSampleRate 回写采样率到 Session + .mat + JSON
+        function SetSampleRate(obj, datasetIdx, newRate)
+        % SetSampleRate 更新采样率：Session + .mat + JSON
             obj.Session.UpdateSampleRate(datasetIdx, newRate);
             matPath = obj.Session.GetDatasetPath(datasetIdx);
             if ~isempty(matPath) && exist(matPath, 'file')
                 DataReaderFactory.UpdateSampleRateInMat(matPath, newRate);
-                [outDir, baseName] = fileparts(matPath);
-                jsonPath = fullfile(outDir, [baseName '_meta.json']);
-                if exist(jsonPath, 'file')
-                    try
-                        meta = jsondecode(fileread(jsonPath));
-                        meta.sample_rate = newRate;
-                        DataReaderFactory.WriteJson(jsonPath, meta);
-                    catch
-                    end
-                end
             end
         end
 
-        function PersistRenameChannel(obj, datasetIdx, colIdx, newName)
-        % PersistRenameChannel 重命名通道并回写 Session + .mat
+        function RenameChannel(obj, datasetIdx, colIdx, newName)
+        % RenameChannel 重命名通道：Session + .mat + JSON
             ds = obj.Session.GetDataset(datasetIdx);
             newNames = ds.ColumnNames;
             newNames{colIdx} = newName;
@@ -1279,92 +1155,13 @@ classdef TimeSeriesPresenter < BasePresenter
 
             matPath = obj.Session.GetDatasetPath(datasetIdx);
             if ~isempty(matPath)
-                sa_column_names = newNames; %#ok<NASGU>
-                save(matPath, 'sa_column_names', '-append');
-                DataReaderFactory.UpdateColumnNamesInMeta(matPath, newNames);
+                DataReaderFactory.UpdateColumnNamesInMat(matPath, newNames);
             end
         end
 
-        function newRate = PromptSampleRate(~, dsName, defaultVal)
-        % PromptSampleRate 弹窗输入采样率，取消返回 []
-            if nargin < 3, defaultVal = ''; end
-            newRate = [];
-            dlg = dialog('Name', '设置采样率', 'Position', [400 350 340 160], ...
-                'WindowStyle', 'modal', 'Resize', 'off');
-            uicontrol('Parent', dlg, 'Style', 'text', ...
-                'String', sprintf('数据集: %s', dsName), ...
-                'FontSize', 10, ...
-                'Position', [14 120 312 22], 'HorizontalAlignment', 'left');
-            uicontrol('Parent', dlg, 'Style', 'text', ...
-                'String', '采样率 (Hz):', ...
-                'FontSize', 10, ...
-                'Position', [14 86 100 22], 'HorizontalAlignment', 'left');
-            editRate = uicontrol('Parent', dlg, 'Style', 'edit', ...
-                'String', defaultVal, 'FontSize', 10, ...
-                'Position', [120 84 196 26]);
-            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
-                'String', '确定', 'FontSize', 10, ...
-                'Position', [150 14 70 30], ...
-                'Callback', @(~, ~) doOk());
-            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
-                'String', '取消', 'FontSize', 10, ...
-                'Position', [240 14 70 30], ...
-                'Callback', @(~, ~) delete(dlg));
-            uiwait(dlg);
-            function doOk()
-                v = str2double(get(editRate, 'String'));
-                if ~isnan(v) && v > 0
-                    newRate = v;
-                    uiresume(dlg); delete(dlg);
-                else
-                    errordlg('采样率必须为正数', '输入错误', 'modal');
-                end
-            end
-        end
-
-        function result = PromptSliceRange(~, colName, totalRows, defaultStart, defaultLen)
-        % PromptSliceRange 弹窗输入切片范围，取消返回 []
-            result = [];
-            dlg = dialog('Name', sprintf('切片范围 - %s', colName), ...
-                'Position', [400 350 340 200], ...
-                'WindowStyle', 'modal', 'Resize', 'off');
-            uicontrol('Parent', dlg, 'Style', 'text', ...
-                'String', sprintf('共 %d 行', totalRows), ...
-                'FontSize', 10, ...
-                'Position', [14 162 312 22], 'HorizontalAlignment', 'left');
-            uicontrol('Parent', dlg, 'Style', 'text', ...
-                'String', '起点行号:', ...
-                'FontSize', 10, ...
-                'Position', [14 128 100 22], 'HorizontalAlignment', 'left');
-            editStart = uicontrol('Parent', dlg, 'Style', 'edit', ...
-                'String', num2str(defaultStart), 'FontSize', 10, ...
-                'Position', [120 126 196 26]);
-            uicontrol('Parent', dlg, 'Style', 'text', ...
-                'String', '长度:', ...
-                'FontSize', 10, ...
-                'Position', [14 92 100 22], 'HorizontalAlignment', 'left');
-            editLen = uicontrol('Parent', dlg, 'Style', 'edit', ...
-                'String', num2str(defaultLen), 'FontSize', 10, ...
-                'Position', [120 90 196 26]);
-            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
-                'String', '确定', 'FontSize', 10, ...
-                'Position', [150 14 70 30], ...
-                'Callback', @(~, ~) doOk());
-            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
-                'String', '取消', 'FontSize', 10, ...
-                'Position', [240 14 70 30], ...
-                'Callback', @(~, ~) delete(dlg));
-            uiwait(dlg);
-            function doOk()
-                s = round(str2double(get(editStart, 'String')));
-                l = round(str2double(get(editLen, 'String')));
-                if ~isnan(s) && ~isnan(l) && s >= 1 && l >= 1
-                    result = [s, l];
-                    uiresume(dlg); delete(dlg);
-                else
-                    errordlg('起点 ≥1, 长度 ≥1', '输入错误', 'modal');
-                end
-            end
+        function idx = ChannelColorIndex(~, datasetIdx, colIdx, nColors)
+        % ChannelColorIndex 通道→颜色索引（基于 datasetIdx+colIdx 哈希，与序号无关）
+            idx = mod((datasetIdx - 1) * 7 + colIdx, nColors) + 1;
         end
 
     end

@@ -618,19 +618,11 @@ classdef TimeSeriesView < handle
                 return;
             end
 
-            % 列1：复选框勾选
+            % 列1：复选框勾选（View 只广播事件，Presenter 处理级联逻辑）
             val = logical(obj.ChannelTable.Data{visRow, 1});
             if r.isParent
-                dsIdx = r.datasetIdx;
-                obj.ChannelRows_(internalIdx).checked = val;
-                for i = 1:numel(obj.ChannelRows_)
-                    if ~obj.ChannelRows_(i).isParent && obj.ChannelRows_(i).datasetIdx == dsIdx
-                        obj.ChannelRows_(i).checked = val;
-                    end
-                end
-                obj.SetChannelTable(obj.ChannelRows_);
                 notify(obj, 'ChannelCheckChanged', ...
-                    AppEventData(struct('datasetIdx', dsIdx, 'colIdx', 0, 'checked', val)));
+                    AppEventData(struct('datasetIdx', r.datasetIdx, 'colIdx', 0, 'checked', val)));
             else
                 notify(obj, 'ChannelCheckChanged', ...
                     AppEventData(struct('datasetIdx', r.datasetIdx, 'colIdx', r.colIdx, 'checked', val)));
@@ -857,6 +849,196 @@ classdef TimeSeriesView < handle
             if numel(lines) >= 2
                 legend(ax, 'Interpreter', 'none', 'Location', 'northwest');
             end
+        end
+
+        % ---- 弹窗工厂（Presenter 调用，View 负责 UI 创建） ----
+
+        function h = CreateSpectrumPopup(obj)
+        % CreateSpectrumPopup 创建频谱分析弹窗骨架
+        %
+        % 输出 h：struct，含 fig / axTime / axFreq / modeDropdown
+        % Presenter 负责注册生命周期和填充数据
+
+            fig = uifigure('Name', 'Spectrum Analysis', ...
+                'NumberTitle', 'off', 'Position', [200 150 900 720]);
+
+            g = uigridlayout(fig, [3 1], 'RowHeight', {36, '1x', '1x'}, ...
+                'Padding', [6 6 6 6], 'RowSpacing', 4);
+
+            toolbar = uigridlayout(g, [1 2], 'ColumnWidth', {'fit', '1x'}, ...
+                'Padding', [0 0 0 0]);
+            toolbar.Layout.Row = 1;
+            uilabel(toolbar, 'Text', 'Mode:', 'VerticalAlignment', 'center');
+            modeDropdown = uidropdown(toolbar, ...
+                'Items', {'FFT 幅值谱', 'Welch PSD (平滑)', '累积 RMS'}, ...
+                'Value', 'FFT 幅值谱');
+
+            axTime = uiaxes(g);
+            axTime.Layout.Row = 2;
+            axFreq = uiaxes(g);
+            axFreq.Layout.Row = 3;
+
+            h = struct('fig', fig, 'axTime', axTime, 'axFreq', axFreq, ...
+                       'modeDropdown', modeDropdown);
+        end
+
+        function h = CreateCalcDialog(obj, channelList)
+        % CreateCalcDialog 创建通道运算对话框骨架
+        %
+        % 输入：
+        %   channelList - cell 通道名称列表
+        %
+        % 输出 h：struct，含全部 UI 句柄，Presenter 负责回调和数据填充
+
+            opTypes = {'A + B', 'A - B', 'A × B', 'A ÷ B', ...
+                       'diff(A)', 'cumsum(A)', '|A|', 'A²', '√A', ...
+                       'log₁₀(A)', 'detrend(A)', 'RMS(A)', 'smooth(A)'};
+
+            fig = uifigure('Name', '通道运算', ...
+                'NumberTitle', 'off', 'Position', [400 260 380 440], ...
+                'Resize', 'off');
+
+            g = uigridlayout(fig, [10 2], ...
+                'RowHeight', [repmat({28}, 1, 9), {36}], ...
+                'ColumnWidth', {110, '1x'}, ...
+                'Padding', [10 10 10 10], 'RowSpacing', 5);
+
+            uilabel(g, 'Text', '运算类型:');
+            opPopup = uidropdown(g, 'Items', opTypes, 'Value', opTypes{1});
+            uilabel(g, 'Text', '通道A:');
+            popupA = uidropdown(g, 'Items', channelList, 'Value', channelList{1});
+            uilabel(g, 'Text', '通道B:');
+            popupB = uidropdown(g, 'Items', channelList, 'Value', channelList{1}, ...
+                'Enable', 'off');
+            uilabel(g, 'Text', 'A 起点:');
+            editA1 = uieditfield(g, 'numeric', 'Value', 1, 'Limits', [1 inf]);
+            uilabel(g, 'Text', 'A 长度:');
+            editA2 = uieditfield(g, 'numeric', 'Value', 1, 'Limits', [1 inf]);
+            uilabel(g, 'Text', 'B 起点:');
+            editB1 = uieditfield(g, 'numeric', 'Value', 1, 'Limits', [1 inf], 'Enable', 'off');
+            uilabel(g, 'Text', 'B 长度:');
+            editB2 = uieditfield(g, 'numeric', 'Value', 1, 'Limits', [1 inf], 'Enable', 'off');
+            winLabel = uilabel(g, 'Text', '窗口大小:');
+            winLabel.Visible = 'off';
+            editWin = uieditfield(g, 'numeric', 'Value', 10, 'Limits', [2 inf]);
+            editWin.Visible = 'off';
+            uilabel(g, 'Text', '结果名称:');
+            editName = uieditfield(g, 'text', 'Value', '');
+            btnGrid = uigridlayout(g, [1 2], 'ColumnWidth', {'1x', '1x'}, ...
+                'ColumnSpacing', 8, 'RowHeight', {28}, 'Padding', [0 0 0 0]);
+            btnGrid.Layout.Column = [1 2];
+            btnOk = uibutton(btnGrid, 'push', 'Text', '确定');
+            btnCancel = uibutton(btnGrid, 'push', 'Text', '取消');
+
+            h = struct('fig', fig, ...
+                       'opPopup', opPopup, 'popupA', popupA, 'popupB', popupB, ...
+                       'editA1', editA1, 'editA2', editA2, ...
+                       'editB1', editB1, 'editB2', editB2, ...
+                       'winLabel', winLabel, 'editWin', editWin, ...
+                       'editName', editName, ...
+                       'btnOk', btnOk, 'btnCancel', btnCancel);
+        end
+
+        function result = ShowSampleRateDialog(~, dsName, defaultVal)
+        % ShowSampleRateDialog 弹窗输入采样率
+        %
+        % 输入：
+        %   dsName     - 数据集名称
+        %   defaultVal - 默认值（数字或字符串）
+        %
+        % 输出：
+        %   result - 用户输入的采样率数值，取消返回 []
+
+            if nargin < 3, defaultVal = ''; end
+            result = [];
+            dlg = dialog('Name', '设置采样率', 'Position', [400 350 340 160], ...
+                'WindowStyle', 'modal', 'Resize', 'off');
+            uicontrol('Parent', dlg, 'Style', 'text', ...
+                'String', sprintf('数据集: %s', dsName), ...
+                'FontSize', 10, ...
+                'Position', [14 120 312 22], 'HorizontalAlignment', 'left');
+            uicontrol('Parent', dlg, 'Style', 'text', ...
+                'String', '采样率 (Hz):', ...
+                'FontSize', 10, ...
+                'Position', [14 86 100 22], 'HorizontalAlignment', 'left');
+            editRate = uicontrol('Parent', dlg, 'Style', 'edit', ...
+                'String', defaultVal, 'FontSize', 10, ...
+                'Position', [120 84 196 26]);
+            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
+                'String', '确定', 'FontSize', 10, ...
+                'Position', [150 14 70 30], ...
+                'Callback', @(~, ~) doOk());
+            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
+                'String', '取消', 'FontSize', 10, ...
+                'Position', [240 14 70 30], ...
+                'Callback', @(~, ~) delete(dlg));
+            uiwait(dlg);
+            function doOk()
+                v = str2double(get(editRate, 'String'));
+                if ~isnan(v) && v > 0
+                    result = v;
+                    uiresume(dlg); delete(dlg);
+                else
+                    errordlg('采样率必须为正数', '输入错误', 'modal');
+                end
+            end
+        end
+
+        function result = ShowSliceRangeDialog(~, colName, totalRows, defaultStart, defaultLen)
+        % ShowSliceRangeDialog 弹窗输入切片范围
+        %
+        % 输出：
+        %   result - [start, len] 或 []
+
+            result = [];
+            dlg = dialog('Name', sprintf('切片范围 - %s', colName), ...
+                'Position', [400 350 340 200], ...
+                'WindowStyle', 'modal', 'Resize', 'off');
+            uicontrol('Parent', dlg, 'Style', 'text', ...
+                'String', sprintf('共 %d 行', totalRows), ...
+                'FontSize', 10, ...
+                'Position', [14 162 312 22], 'HorizontalAlignment', 'left');
+            uicontrol('Parent', dlg, 'Style', 'text', ...
+                'String', '起点行号:', ...
+                'FontSize', 10, ...
+                'Position', [14 128 100 22], 'HorizontalAlignment', 'left');
+            editStart = uicontrol('Parent', dlg, 'Style', 'edit', ...
+                'String', num2str(defaultStart), 'FontSize', 10, ...
+                'Position', [120 126 196 26]);
+            uicontrol('Parent', dlg, 'Style', 'text', ...
+                'String', '长度:', ...
+                'FontSize', 10, ...
+                'Position', [14 92 100 22], 'HorizontalAlignment', 'left');
+            editLen = uicontrol('Parent', dlg, 'Style', 'edit', ...
+                'String', num2str(defaultLen), 'FontSize', 10, ...
+                'Position', [120 90 196 26]);
+            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
+                'String', '确定', 'FontSize', 10, ...
+                'Position', [150 14 70 30], ...
+                'Callback', @(~, ~) doOk());
+            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
+                'String', '取消', 'FontSize', 10, ...
+                'Position', [240 14 70 30], ...
+                'Callback', @(~, ~) delete(dlg));
+            uiwait(dlg);
+            function doOk()
+                s = round(str2double(get(editStart, 'String')));
+                l = round(str2double(get(editLen, 'String')));
+                if ~isnan(s) && ~isnan(l) && s >= 1 && l >= 1
+                    result = [s, l];
+                    uiresume(dlg); delete(dlg);
+                else
+                    errordlg('起点 ≥1, 长度 ≥1', '输入错误', 'modal');
+                end
+            end
+        end
+
+        function h = CreateExportFigure(obj, name)
+        % CreateExportFigure 创建导出用 figure（非 uifigure）
+        %
+        % 输出 h：figure 句柄，Presenter 负责 subplot/plot 内容
+
+            h = figure('Name', name, 'NumberTitle', 'off');
         end
     end
 end

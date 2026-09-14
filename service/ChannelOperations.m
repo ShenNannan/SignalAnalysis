@@ -142,6 +142,68 @@ classdef ChannelOperations
             stats.meanY = mean(refSig);
             stats.stdY = std(refSig);
         end
+
+        function sig = ApplyNorm(sig, normMode, stats)
+        % ApplyNorm 按归一化参数变换信号
+        %
+        % 输入：
+        %   sig       - [N×1] 信号
+        %   normMode  - 'none'|'minmax'|'zscore'|'meanzero'
+        %   stats     - struct(minY, maxY, meanY, stdY)
+        %
+        % 输出：
+        %   sig - 归一化后的信号
+
+            switch lower(normMode)
+                case 'none'
+                    return;
+                case 'minmax'
+                    if stats.maxY - stats.minY > 0
+                        sig = (sig - stats.minY) / (stats.maxY - stats.minY);
+                    end
+                case 'zscore'
+                    if stats.stdY > 0
+                        sig = (sig - stats.meanY) / stats.stdY;
+                    end
+                case 'meanzero'
+                    sig = sig - stats.meanY;
+            end
+        end
+
+        function [sig, xSig] = SliceAndAlign(data, xRaw, sliceRange, hasXChannel)
+        % SliceAndAlign 对信号和横轴数据做切片并对齐
+        %
+        % 输入：
+        %   data        - [N×1] 信号数据
+        %   xRaw        - [M×1] 横轴数据（hasXChannel=false 时忽略）
+        %   sliceRange  - [start, end] 或 []（不切片）
+        %   hasXChannel - 是否有自定义横轴
+        %
+        % 输出：
+        %   sig  - 切片后的信号
+        %   xSig - 切片后的横轴（无自定义横轴时为索引 0:N-1）
+
+            if ~isempty(sliceRange)
+                sig = ChannelOperations.ApplySlice(data, sliceRange(1), sliceRange(2));
+                if hasXChannel
+                    xSig = ChannelOperations.ApplySlice(xRaw, sliceRange(1), sliceRange(2));
+                    n = min(length(xSig), length(sig));
+                    xSig = xSig(1:n);
+                    sig = sig(1:n);
+                else
+                    xSig = (0:length(sig)-1)';
+                end
+            else
+                sig = data;
+                if hasXChannel
+                    n = min(length(xRaw), length(sig));
+                    xSig = xRaw(1:n);
+                    sig = sig(1:n);
+                else
+                    xSig = (0:length(sig)-1)';
+                end
+            end
+        end
     end
 
     methods (Static, Access = private)

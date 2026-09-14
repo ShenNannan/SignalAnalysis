@@ -1072,13 +1072,52 @@ classdef DataReaderFactory
         end
 
         function UpdateSampleRateInMat(matPath, sampleRate)
-        % UpdateSampleRateInMat 更新 .mat 文件中的采样率
+        % UpdateSampleRateInMat 更新 .mat + _meta.json 中的采样率
         %
-        % 用于用户在 UI 界面设置采样率后，回写到 .mat 文件
+        % 用于用户在 UI 界面设置采样率后，回写到 .mat 和 JSON 文件
 
             loaded = load(matPath);
             loaded.sa_sample_rate = sampleRate;
             save(matPath, '-struct', 'loaded');
+
+            [outDir, baseName] = fileparts(matPath);
+            jsonPath = fullfile(outDir, [baseName '_meta.json']);
+            if exist(jsonPath, 'file')
+                try
+                    meta = jsondecode(fileread(jsonPath));
+                    meta.sample_rate = sampleRate;
+                    DataReaderFactory.WriteJson(jsonPath, meta);
+                catch
+                end
+            end
+        end
+
+        function UpdateDatasetNameInMat(matPath, newName)
+        % UpdateDatasetNameInMat 更新 .mat 中的 sa_dataset_name
+
+            sa_dataset_name = newName; %#ok<NASGU>
+            save(matPath, 'sa_dataset_name', '-append');
+        end
+
+        function name = LoadDatasetName(matPath)
+        % LoadDatasetName 从 .mat 读取 sa_dataset_name，无则返回 ''
+
+            name = '';
+            try
+                S = load(matPath, 'sa_dataset_name');
+                if isfield(S, 'sa_dataset_name') && ~isempty(S.sa_dataset_name)
+                    name = regexprep(strtrim(S.sa_dataset_name), '^[▼▶]\s*', '');
+                end
+            catch
+            end
+        end
+
+        function UpdateColumnNamesInMat(matPath, newNames)
+        % UpdateColumnNamesInMat 更新 .mat 中的 sa_column_names
+
+            sa_column_names = newNames; %#ok<NASGU>
+            save(matPath, 'sa_column_names', '-append');
+            DataReaderFactory.UpdateColumnNamesInMeta(matPath, newNames);
         end
 
         function SaveMetadata(matPath, sampleRate, units, descriptions)
