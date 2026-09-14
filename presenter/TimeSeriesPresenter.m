@@ -14,6 +14,9 @@ classdef TimeSeriesPresenter < BasePresenter
         LastFocusedAxes_ = 0  % 上次聚焦的 axes 索引（避免重复刷新通道表）
         CursorMgr       % struct 游标管理器
         CursorXData_    % cell {ax1_xData, ax2_xData, ...} 缓存
+        CursorXParams_  % cell {struct('x0','dx','n','isUniform'), ...} O(1) 参数
+        CursorLastIdx_  % double 上次游标索引（防抖）
+        CursorActiveLine_  % cell {ax1_line, ax2_line, ...} 吸附后的曲线句柄
     end
 
     methods
@@ -50,6 +53,9 @@ classdef TimeSeriesPresenter < BasePresenter
             obj.TrackListener(addlistener(view, 'CursorMotion', @obj.OnCursorMotion));
 
             obj.CursorXData_ = cell(1, 6);
+            obj.CursorXParams_ = cell(1, 6);
+            obj.CursorLastIdx_ = 0;
+            obj.CursorActiveLine_ = cell(1, 6);
             obj.initCursor();
             obj.RefreshChannelTable();
         end
@@ -1150,6 +1156,23 @@ classdef TimeSeriesPresenter < BasePresenter
                 obj.LastFocusedAxes_ = d.axesIdx;
                 obj.RefreshChannelTable();
             end
+
+            % Datatip：仅在 MATLAB 自带数据提示模式激活时创建
+            if d.axesIdx >= 1
+                fig = ancestor(obj.View.Grid_, 'figure');
+                clickType = fig.SelectionType;
+                isDatatipMode = false;
+                try
+                    mode = fig.ModeManager.CurrentMode;
+                    isDatatipMode = ~isempty(mode) && contains(mode.Name, 'DataTip', 'IgnoreCase', true);
+                catch
+                end
+                if isDatatipMode && strcmp(clickType, 'normal') && obj.CursorLastIdx_ > 0
+                    obj.CreateDatatip(d.axesIdx, d.x, d.y);
+                elseif strcmp(clickType, 'alt')
+                    obj.ClearDatatips(d.axesIdx);
+                end
+            end
         end
 
         % ---- 共享 Helper ----
@@ -1191,7 +1214,7 @@ classdef TimeSeriesPresenter < BasePresenter
         end
 
         function OnCursorMotion(obj, ~, evt)
-        % OnCursorMotion 鼠标移动事件处理：二分查找 + 更新游标 + 回读数据
+        % OnCursorMotion 鼠标移动事件处理：O(1) 查找 + 防抖 + Marker 更新
             d = evt.Data;
             axIdx = d.axesIdx;
 
@@ -1204,8 +1227,22 @@ classdef TimeSeriesPresenter < BasePresenter
                 return;
             end
 
-            % 最近邻查找
-            [~, idx] = min(abs(xData - d.x));
+            % 【O(1) 索引推算】
+            params = obj.CursorXParams_{axIdx};
+            if isempty(params), return; end
+            if params.isUniform && params.n > 0
+                idx = round((d.x - params.x0) / params.dx) + 1;
+                idx = max(1, min(params.n, idx));
+            else
+                [~, idx] = min(abs(xData - d.x));
+            end
+
+            % 【防抖】索引未变则跳过渲染
+            if idx == obj.CursorLastIdx_
+                return;
+            end
+            obj.CursorLastIdx_ = idx;
+
             realX = xData(idx);
 
             % 获取同组 axes
@@ -1214,17 +1251,52 @@ classdef TimeSeriesPresenter < BasePresenter
             % 更新游标位置
             obj.View.UpdateCursorPosition(axIdx, realX, groupAxes);
 
-            % 读取各通道值
+            % 读取各通道值 + 智能吸附 + 收集 Marker 坐标
             readout = {};
+            markerData = struct('axIdx', {}, 'x', {}, 'y', {}, 'hoverText', {});
             for gAx = groupAxes
                 chans = obj.Session.GetAxesChannels(gAx);
+                yVals = nan(1, length(chans));
+                labels = cell(1, length(chans));
                 for k = 1:length(chans)
                     chanData = chans{k}.Data;
                     if idx <= length(chanData)
+                        yVals(k) = chanData(idx);
                         readout{end+1} = struct('Label', chans{k}.Label, 'Y', chanData(idx)); %#ok<AGROW>
                     end
+                    labels{k} = chans{k}.Label;
                 end
+                % 智能吸附：找离 mouseY 最近的有效通道
+                validMask = ~isnan(yVals);
+                if any(validMask)
+                    [~, nearestK] = min(abs(yVals(validMask) - d.mouseY));
+                    validIdx = find(validMask);
+                    activeK = validIdx(nearestK);
+                    snapY = yVals(activeK);
+                    activeLabel = labels{activeK};
+                    % 记录吸附后的曲线句柄
+                    allLines = findobj(obj.View.GetAxes(gAx), 'Type', 'line');
+                    tagMask = arrayfun(@(l) ~strcmp(l.Tag, 'cursor'), allLines);
+                    dataLines = allLines(tagMask);
+                    % 匹配 DisplayName 到 Label（去掉数据集前缀）
+                    obj.CursorActiveLine_{gAx} = [];
+                    for ml = 1:numel(dataLines)
+                        if contains(activeLabel, dataLines(ml).DisplayName)
+                            obj.CursorActiveLine_{gAx} = dataLines(ml);
+                            break;
+                        end
+                    end
+                    if isempty(obj.CursorActiveLine_{gAx}) && ~isempty(dataLines)
+                        obj.CursorActiveLine_{gAx} = dataLines(1);
+                    end
+                else
+                    snapY = NaN;
+                    activeLabel = '';
+                end
+                markerData(end+1) = struct('axIdx', gAx, 'x', realX, 'y', snapY, ...
+                    'hoverText', sprintf('  X: %.6g\n  Y: %.6g', realX, snapY)); %#ok<AGROW>
             end
+            obj.View.UpdateCursorMarkers(markerData);
             obj.UpdateCursorReadout(realX, readout);
         end
 
@@ -1248,10 +1320,46 @@ classdef TimeSeriesPresenter < BasePresenter
             end
         end
 
+        function CreateDatatip(obj, axIdx, ~, ~)
+        % CreateDatatip 在吸附后的活跃曲线上创建原生 datatip
+            xData = obj.CursorXData_{axIdx};
+            if isempty(xData), return; end
+            idx = max(1, min(length(xData), obj.CursorLastIdx_));
+            realX = xData(idx);
+
+            % 使用吸附时记录的活跃曲线
+            target = [];
+            if axIdx <= numel(obj.CursorActiveLine_) && ~isempty(obj.CursorActiveLine_{axIdx})
+                if isgraphics(obj.CursorActiveLine_{axIdx})
+                    target = obj.CursorActiveLine_{axIdx};
+                end
+            end
+            % 回退：找 axes 中第一条非游标线
+            if isempty(target)
+                ax = obj.View.GetAxes(axIdx);
+                allLines = findobj(ax, 'Type', 'line');
+                mask = arrayfun(@(l) ~strcmp(l.Tag, 'cursor'), allLines);
+                dataLines = allLines(mask);
+                if isempty(dataLines), return; end
+                target = dataLines(1);
+            end
+            yData = target.YData;
+            if idx <= numel(yData) && ~isnan(yData(idx))
+                datatip(target, realX, yData(idx));
+            end
+        end
+
+        function ClearDatatips(obj, axIdx)
+        % ClearDatatips 清除指定 axes 上的所有 datatip
+            ax = obj.View.GetAxes(axIdx);
+            delete(findall(ax, 'Type', 'datatip'));
+        end
+
         function xData = buildXData(obj, axesIdx, chans, xRaw, hasXChannel)
-        % buildXData 构建游标用 x-data 向量（基于第一个通道的切片范围）
+        % buildXData 构建游标用 x-data 向量，同时缓存 O(1) 参数
             if isempty(chans)
                 xData = [];
+                obj.CursorXParams_{axesIdx} = struct('x0',0,'dx',1,'n',0,'isUniform',false);
                 return;
             end
             chan = chans{1};
@@ -1271,6 +1379,17 @@ classdef TimeSeriesPresenter < BasePresenter
                     xData = (0:length(chan.Data)-1)';
                 end
             end
+            % 缓存 O(1) 查找参数
+            nPts = length(xData);
+            if nPts >= 2
+                dx = xData(2) - xData(1);
+                isUniform = all(abs(diff(xData) - dx) < 1e-10 * max(abs(dx), eps));
+            else
+                dx = 1;
+                isUniform = true;
+            end
+            obj.CursorXParams_{axesIdx} = struct(...
+                'x0', xData(1), 'dx', dx, 'n', nPts, 'isUniform', isUniform);
         end
 
         function groupAxes = getXGroup(obj, axIdx)

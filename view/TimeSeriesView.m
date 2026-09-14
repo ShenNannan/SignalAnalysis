@@ -184,13 +184,30 @@ classdef TimeSeriesView < handle
             if ~isempty(ax) && isvalid(ax)
                 legend(ax, 'off');
                 cla(ax);
-                % 重建被 cla 删除的游标线
+                % 重建被 cla 删除的游标线和锚点标记
                 if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines') ...
                         && axesIdx <= numel(obj.CursorMgr_.Lines)
                     obj.CursorMgr_.Lines{axesIdx} = xline(ax, 0, ...
                         'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
                         'LineStyle', '-', 'HitTest', 'off', ...
                         'PickableParts', 'none', 'Visible', 'off');
+                end
+                if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Markers') ...
+                        && axesIdx <= numel(obj.CursorMgr_.Markers)
+                    obj.CursorMgr_.Markers{axesIdx} = line(ax, NaN, NaN, ...
+                        'Marker', 'o', 'MarkerSize', 6, ...
+                        'MarkerFaceColor', [0.85 0.32 0.09], ...
+                        'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
+                        'HitTest', 'off', 'PickableParts', 'none', ...
+                        'Tag', 'cursor', 'Visible', 'off');
+                end
+                if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'HoverTexts') ...
+                        && axesIdx <= numel(obj.CursorMgr_.HoverTexts)
+                    obj.CursorMgr_.HoverTexts{axesIdx} = text(ax, 0, 0, '', ...
+                        'BackgroundColor', [1 1 1 0.85], 'EdgeColor', [0.5 0.5 0.5], ...
+                        'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
+                        'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
+                        'Interpreter', 'none', 'Visible', 'off');
                 end
             end
         end
@@ -231,13 +248,30 @@ classdef TimeSeriesView < handle
             ax.LineStyleOrderIndex = 1;
             ax.ColorOrderIndex = 1;
 
-            % 重建被 cla('reset') 删除的游标线
+            % 重建被 cla('reset') 删除的游标线和锚点标记
             if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines') ...
                     && axesIdx <= numel(obj.CursorMgr_.Lines)
                 obj.CursorMgr_.Lines{axesIdx} = xline(ax, 0, ...
                     'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
                     'LineStyle', '-', 'HitTest', 'off', ...
                     'PickableParts', 'none', 'Visible', 'off');
+            end
+            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Markers') ...
+                    && axesIdx <= numel(obj.CursorMgr_.Markers)
+                obj.CursorMgr_.Markers{axesIdx} = line(ax, NaN, NaN, ...
+                    'Marker', 'o', 'MarkerSize', 6, ...
+                    'MarkerFaceColor', [0.85 0.32 0.09], ...
+                    'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
+                    'HitTest', 'off', 'PickableParts', 'none', ...
+                    'Tag', 'cursor', 'Visible', 'off');
+            end
+            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'HoverTexts') ...
+                    && axesIdx <= numel(obj.CursorMgr_.HoverTexts)
+                obj.CursorMgr_.HoverTexts{axesIdx} = text(ax, 0, 0, '', ...
+                    'BackgroundColor', [1 1 1 0.85], 'EdgeColor', [0.5 0.5 0.5], ...
+                    'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
+                    'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
+                    'Interpreter', 'none', 'Visible', 'off');
             end
 
             if hasRightY
@@ -249,7 +283,7 @@ classdef TimeSeriesView < handle
                     [~, shortLabel] = strtok(labels{c}, '/');
                     if isempty(shortLabel), displayName = labels{c};
                     else, displayName = strtrim(shortLabel(2:end)); end
-                    h = plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'LineWidth', 1, 'LineStyle', '-', 'DisplayName', displayName, 'Tag', 'leftY');
+                    h = plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'LineWidth', 1, 'LineStyle', '-', 'DisplayName', displayName, 'Tag', 'leftY', 'HitTest', 'off');
                     allLines(end+1) = h;
                 end
                 hold(ax, 'off');
@@ -259,7 +293,7 @@ classdef TimeSeriesView < handle
                 for c = 1:numel(rightYData.x)
                     h = plot(ax, rightYData.x{c}, rightYData.y{c}, ...
                         'Color', rightYData.colors{c}, 'LineWidth', 1, 'LineStyle', '--', ...
-                        'DisplayName', rightYData.labels{c}, 'Tag', 'rightY');
+                        'DisplayName', rightYData.labels{c}, 'Tag', 'rightY', 'HitTest', 'off');
                     allLines(end+1) = h;
                 end
                 hold(ax, 'off');
@@ -273,7 +307,7 @@ classdef TimeSeriesView < handle
                     [~, shortLabel] = strtok(labels{c}, '/');
                     if isempty(shortLabel), displayName = labels{c};
                     else, displayName = strtrim(shortLabel(2:end)); end
-                    h = plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'LineWidth', 1, 'LineStyle', '-', 'DisplayName', displayName);
+                    h = plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'LineWidth', 1, 'LineStyle', '-', 'DisplayName', displayName, 'HitTest', 'off');
                     allLines(end+1) = h;
                 end
                 hold(ax, 'off');
@@ -339,18 +373,31 @@ classdef TimeSeriesView < handle
         % ---- 同步游标卡尺 ----
 
         function mgr = InitCursorManager(obj, infoLabel)
-        % InitCursorManager 创建同步游标 xline（仅为已存在的 axes）
+        % InitCursorManager 创建同步游标 xline + 交点 Marker + 悬浮文本
             lineOpts = {'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
                         'LineStyle', '-', 'HitTest', 'off', ...
                         'PickableParts', 'none', 'Visible', 'off'};
+            markerOpts = {'Marker', 'o', 'MarkerSize', 6, ...
+                          'MarkerFaceColor', [0.85 0.32 0.09], ...
+                          'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
+                          'HitTest', 'off', 'PickableParts', 'none', ...
+                          'Tag', 'cursor', 'Visible', 'off'};
+            txtOpts = {'BackgroundColor', [1 1 1 0.85], 'EdgeColor', [0.5 0.5 0.5], ...
+                       'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
+                       'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
+                       'Interpreter', 'none', 'Visible', 'off'};
             lines = cell(1, obj.AxesCount_);
+            markers = cell(1, obj.AxesCount_);
+            hoverTexts = cell(1, obj.AxesCount_);
             for i = 1:obj.AxesCount_
                 lines{i} = xline(obj.AxesHandles_{i}, 0, lineOpts{:});
+                markers{i} = line(obj.AxesHandles_{i}, NaN, NaN, markerOpts{:});
+                hoverTexts{i} = text(obj.AxesHandles_{i}, 0, 0, '', txtOpts{:});
             end
             if nargin < 2 || isempty(infoLabel)
-                mgr = struct('Lines', {lines});
+                mgr = struct('Lines', {lines}, 'Markers', {markers}, 'HoverTexts', {hoverTexts});
             else
-                mgr = struct('Lines', {lines}, 'InfoLabel', infoLabel);
+                mgr = struct('Lines', {lines}, 'Markers', {markers}, 'HoverTexts', {hoverTexts}, 'InfoLabel', infoLabel);
             end
             obj.CursorMgr_ = mgr;
         end
@@ -370,13 +417,50 @@ classdef TimeSeriesView < handle
             end
         end
 
+        function UpdateCursorMarkers(obj, markerData)
+        % UpdateCursorMarkers 更新交点吸附 Marker + 悬浮文本
+        % markerData: struct array with fields: axIdx, x, y, hoverText
+            if isempty(obj.CursorMgr_) || ~isfield(obj.CursorMgr_, 'Markers')
+                return;
+            end
+            markers = obj.CursorMgr_.Markers;
+            hoverTexts = obj.CursorMgr_.HoverTexts;
+            % 先隐藏所有
+            for i = 1:numel(markers)
+                if isgraphics(markers{i}), markers{i}.Visible = 'off'; end
+                if isgraphics(hoverTexts{i}), hoverTexts{i}.Visible = 'off'; end
+            end
+            % 更新有数据的
+            for m = 1:numel(markerData)
+                md = markerData(m);
+                axIdx = md.axIdx;
+                if axIdx < 1 || axIdx > numel(markers), continue; end
+                if isnan(md.y), continue; end
+                set(markers{axIdx}, 'XData', md.x, 'YData', md.y, 'Visible', 'on');
+                set(hoverTexts{axIdx}, 'Position', [md.x, md.y], ...
+                    'String', md.hoverText, 'Visible', 'on');
+            end
+        end
+
         function HideCursor(obj)
-        % HideCursor 隐藏所有游标线
+        % HideCursor 隐藏所有游标线、Marker 和悬浮文本
             if isempty(obj.CursorMgr_), return; end
             lines = obj.CursorMgr_.Lines;
             for i = 1:numel(lines)
                 if ~isgraphics(lines{i}), continue; end
                 lines{i}.Visible = 'off';
+            end
+            if isfield(obj.CursorMgr_, 'Markers')
+                markers = obj.CursorMgr_.Markers;
+                for i = 1:numel(markers)
+                    if isgraphics(markers{i}), markers{i}.Visible = 'off'; end
+                end
+            end
+            if isfield(obj.CursorMgr_, 'HoverTexts')
+                hts = obj.CursorMgr_.HoverTexts;
+                for i = 1:numel(hts)
+                    if isgraphics(hts{i}), hts{i}.Visible = 'off'; end
+                end
             end
             if isfield(obj.CursorMgr_, 'InfoLabel') && ~isempty(obj.CursorMgr_.InfoLabel)
                 obj.CursorMgr_.InfoLabel.Text = '游标: --';
@@ -524,12 +608,27 @@ classdef TimeSeriesView < handle
             idx = obj.AxesCount_;
             ax.ButtonDownFcn = @(s, e) obj.OnAxesButtonDown(idx, e);
             obj.AxesHandles_{end+1} = ax;
-            % 为新 axes 添加游标线
+            % 为新 axes 添加游标线和锚点标记
             if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines')
                 obj.CursorMgr_.Lines{end+1} = xline(ax, 0, ...
                     'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
                     'LineStyle', '-', 'HitTest', 'off', ...
                     'PickableParts', 'none', 'Visible', 'off');
+            end
+            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Markers')
+                obj.CursorMgr_.Markers{end+1} = line(ax, NaN, NaN, ...
+                    'Marker', 'o', 'MarkerSize', 6, ...
+                    'MarkerFaceColor', [0.85 0.32 0.09], ...
+                    'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
+                    'HitTest', 'off', 'PickableParts', 'none', ...
+                    'Tag', 'cursor', 'Visible', 'off');
+            end
+            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'HoverTexts')
+                obj.CursorMgr_.HoverTexts{end+1} = text(ax, 0, 0, '', ...
+                    'BackgroundColor', [1 1 1 0.85], 'EdgeColor', [0.5 0.5 0.5], ...
+                    'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
+                    'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
+                    'Interpreter', 'none', 'Visible', 'off');
             end
             obj.RelayoutGrid();
             obj.LinkXAxes();
@@ -546,10 +645,18 @@ classdef TimeSeriesView < handle
             if ~isempty(obj.AxesXChannelMap_) && length(obj.AxesXChannelMap_) >= obj.AxesCount_ + 1
                 obj.AxesXChannelMap_(end) = [];
             end
-            % 移除对应的游标线
+            % 移除对应的游标线和锚点标记
             if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines') ...
                     && numel(obj.CursorMgr_.Lines) > obj.AxesCount_
                 obj.CursorMgr_.Lines(end) = [];
+            end
+            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Markers') ...
+                    && numel(obj.CursorMgr_.Markers) > obj.AxesCount_
+                obj.CursorMgr_.Markers(end) = [];
+            end
+            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'HoverTexts') ...
+                    && numel(obj.CursorMgr_.HoverTexts) > obj.AxesCount_
+                obj.CursorMgr_.HoverTexts(end) = [];
             end
             obj.FocusedAxes_ = min(obj.FocusedAxes_, obj.AxesCount_);
             obj.RelayoutGrid();
@@ -1132,11 +1239,8 @@ classdef TimeSeriesView < handle
         end
 
         function onCursorMotion(obj)
-        % onCursorMotion 全局鼠标移动：边界保护 + 节流 + 事件广播
+        % onCursorMotion 全局鼠标移动：边界保护 + drawnow limitrate 节流
             if isempty(obj.CursorMgr_), return; end
-            persistent lastT;
-            if ~isempty(lastT) && toc(lastT) < 0.05, return; end
-            lastT = tic;
 
             for i = 1:obj.AxesCount_
                 ax = obj.AxesHandles_{i};
@@ -1145,7 +1249,8 @@ classdef TimeSeriesView < handle
                 if cp(1,1) >= xl(1) && cp(1,1) <= xl(2) && ...
                    cp(1,2) >= yl(1) && cp(1,2) <= yl(2)
                     notify(obj, 'CursorMotion', ...
-                        AppEventData(struct('axesIdx', i, 'x', cp(1,1))));
+                        AppEventData(struct('axesIdx', i, 'x', cp(1,1), 'mouseY', cp(1,2))));
+                    drawnow limitrate;
                     return;
                 end
             end
