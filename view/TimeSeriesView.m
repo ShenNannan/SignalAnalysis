@@ -905,7 +905,8 @@ classdef TimeSeriesView < handle
         end
 
         function OnContextRename(obj)
-        % OnContextRename 右键重命名：选中名称列，用户单击即可编辑
+        % OnContextRename 右键重命名：选中名称列 + 焦点转移
+        %   用户按 Enter/F2/双击 即可进入编辑模式（文字全选+光标）
             sel = obj.ChannelTable.Selection;
             if isempty(sel) || isempty(obj.VisibleRowMap_)
                 return;
@@ -920,6 +921,7 @@ classdef TimeSeriesView < handle
             obj.Renaming_ = true;
             obj.ChannelTable.ColumnEditable(2) = true;
             obj.ChannelTable.Selection = [visRow, 2];
+            focus(obj.ChannelTable);
         end
 
         function OnContextAction(obj, action)
