@@ -615,6 +615,9 @@ classdef TimeSeriesView < handle
             idx = obj.AxesCount_;
             ax.ButtonDownFcn = @(s, e) obj.OnAxesButtonDown(idx, e);
             obj.AxesHandles_{end+1} = ax;
+            % 配置交互：滚轮缩放 + 中键平移 + Shift+左键框选放大
+            disableDefaultInteractions(ax);
+            ax.Interactions = [zoomInteraction, panInteraction, regionZoomInteraction];
             % 为新 axes 添加游标线和锚点标记
             if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines')
                 obj.CursorMgr_.Lines{end+1} = xline(ax, 0, ...
@@ -759,6 +762,11 @@ classdef TimeSeriesView < handle
         function OnAxesButtonDown(obj, axesIdx, e)
             obj.FocusedAxes_ = axesIdx;
             obj.UpdateAxesHighlight();
+            % Shift 拦截：Shift+左键是框选放大，不触发点击事件
+            fig = ancestor(obj.Grid_, 'figure');
+            if ~isempty(fig) && ismember('shift', fig.CurrentModifier)
+                return;
+            end
             x = NaN;
             y = NaN;
             if ~isempty(e) && isprop(e, 'IntersectionPoint')
