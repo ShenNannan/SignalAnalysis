@@ -1233,13 +1233,31 @@ classdef TimeSeriesPresenter < BasePresenter
                 chans = obj.Session.GetAxesChannels(gAx);
                 yVals = nan(1, length(chans));
                 labels = cell(1, length(chans));
+                [xDsIdx, ~] = obj.Session.GetXChannel(gAx);
+                hasXChannel = ~isempty(xDsIdx);
                 for k = 1:length(chans)
-                    chanData = chans{k}.Data;
-                    if idx <= length(chanData)
-                        yVals(k) = chanData(idx);
-                        readout{end+1} = struct('Label', chans{k}.Label, 'Y', chanData(idx)); %#ok<AGROW>
+                    chan = chans{k};
+                    chanData = chan.Data;
+                    if hasXChannel
+                        % 自定义横轴：xData 已切片，直接用 idx
+                        if idx <= length(chanData)
+                            yVals(k) = chanData(idx);
+                            readout{end+1} = struct('Label', chan.Label, 'Y', chanData(idx)); %#ok<AGROW>
+                        end
+                    else
+                        % 默认横轴：idx 是切片后索引，需加偏移
+                        if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
+                            offset = chan.SliceRange(1) - 1;
+                        else
+                            offset = 0;
+                        end
+                        rawIdx = idx + offset;
+                        if rawIdx >= 1 && rawIdx <= length(chanData)
+                            yVals(k) = chanData(rawIdx);
+                            readout{end+1} = struct('Label', chan.Label, 'Y', chanData(rawIdx)); %#ok<AGROW>
+                        end
                     end
-                    labels{k} = chans{k}.Label;
+                    labels{k} = chan.Label;
                 end
 
                 % 智能吸附：构建右Y轴掩码后调用纯函数
@@ -1275,8 +1293,6 @@ classdef TimeSeriesPresenter < BasePresenter
                     if isempty(obj.CursorActiveLine_{gAx}) && ~isempty(dataLines)
                         obj.CursorActiveLine_{gAx} = dataLines(1);
                     end
-                else
-                    activeLabel = '';
                 end
                 markerData(end+1) = struct('axIdx', gAx, 'x', realX, 'y', snapY, ...
                     'hoverText', sprintf('  X: %.6g\n  Y: %s', realX, obj.formatPrecisionValue(snapY))); %#ok<AGROW>

@@ -225,6 +225,11 @@ classdef TimeSeriesView < handle
             ax.LineStyleOrderIndex = 1;
             ax.ColorOrderIndex = 1;
 
+            % 重置限制模式：linkaxes 在空 axes 上锁定 XLim=[0,1]，
+            % cla 不会重置 XLimMode，必须显式恢复为 auto
+            ax.XLimMode = 'auto';
+            ax.YLimMode = 'auto';
+
             if hasRightY
                 % ---- 双Y模式：用 yyaxis ----
                 ax.YAxis(2).Visible = 'on';
@@ -278,7 +283,7 @@ classdef TimeSeriesView < handle
 
             if numel(allLines) >= 2
                 legend(ax, allLines, 'Interpreter', 'none', 'Location', 'northwest');
-            elseif numel(allLines) == 1
+            elseif isscalar(allLines)
                 legend(ax, 'off');
             end
 
@@ -578,7 +583,6 @@ classdef TimeSeriesView < handle
             yyaxis(ax, 'left');
             cla(ax);
             grid(ax, 'on');
-            ylabel(ax, 'Amplitude');
             idx = obj.AxesCount_;
             ax.ButtonDownFcn = @(s, e) obj.OnAxesButtonDown(idx, e);
             obj.AxesHandles_{end+1} = ax;
@@ -907,11 +911,10 @@ classdef TimeSeriesView < handle
         function OnContextRename(obj)
         % OnContextRename 右键重命名：选中名称列 + 焦点转移
         %   用户按 Enter/F2/双击 即可进入编辑模式（文字全选+光标）
-            sel = obj.ChannelTable.Selection;
-            if isempty(sel) || isempty(obj.VisibleRowMap_)
+            if isempty(obj.VisibleRowMap_)
                 return;
             end
-            visRow = sel(1, 1);
+            visRow = obj.LastClickedRow_;
             if visRow < 1 || visRow > numel(obj.VisibleRowMap_)
                 return;
             end
@@ -925,19 +928,18 @@ classdef TimeSeriesView < handle
         end
 
         function OnContextAction(obj, action)
-            sel = obj.ChannelTable.Selection;
-            if isempty(sel) || isempty(obj.VisibleRowMap_)
+            if isempty(obj.VisibleRowMap_)
                 return;
             end
-            rows = unique(sel(:, 1));  % 提取行号（兼容 cell/row 选择模式）
+            visRow = obj.LastClickedRow_;
+            if visRow < 1 || visRow > numel(obj.VisibleRowMap_)
+                return;
+            end
+            ci = obj.VisibleRowMap_(visRow);
+            r = obj.ChannelRows_(ci);
             switch action
                 case 'exportExcel'
-                    for s = 1:numel(rows)
-                        visRow = rows(s);
-                        if visRow < 1 || visRow > numel(obj.VisibleRowMap_), continue; end
-                        ci = obj.VisibleRowMap_(visRow);
-                        r = obj.ChannelRows_(ci);
-                        if ~r.isParent, continue; end
+                    if r.isParent
                         notify(obj, 'ExportExcelClicked', AppEventData(struct('datasetIdx', r.datasetIdx)));
                     end
             end
@@ -977,13 +979,12 @@ classdef TimeSeriesView < handle
         end
 
         function row = GetContextRow(obj)
-        % GetContextRow 右键命中的可见表格行号
+        % GetContextRow 右键命中的可见表格行号（用 LastClickedRow_ 避免 Selection 被重置）
             row = [];
-            sel = obj.ChannelTable.Selection;
-            if isempty(sel) || isempty(obj.VisibleRowMap_)
+            if isempty(obj.VisibleRowMap_)
                 return;
             end
-            row = sel(1);
+            row = obj.LastClickedRow_;
             if row < 1 || row > numel(obj.VisibleRowMap_)
                 row = [];
             end
@@ -1162,7 +1163,7 @@ classdef TimeSeriesView < handle
         end
 
         function result = ShowSampleRateDialog(~, dsName, defaultVal)
-        % ShowSampleRateDialog 弹窗输入采样率（uifigure + uigridlayout）
+        % ShowSampleRateDialog 弹窗输入采样率（uifigure + Position 定位）
         %
         % 输入：
         %   dsName     - 数据集名称
@@ -1174,30 +1175,32 @@ classdef TimeSeriesView < handle
             if nargin < 3, defaultVal = ''; end
             result = [];
             if isnumeric(defaultVal), defaultVal = num2str(defaultVal); end
-            fig = uifigure('Name', '设置采样率', 'WindowStyle', 'modal', ...
-                'Position', [400 350 340 160], 'Resize', 'off');
-            g = uigridlayout(fig, [4 2], ...
-                'RowHeight', {22, 28, 28, 30}, ...
-                'ColumnWidth', {100, '1x'}, ...
-                'Padding', [14 14 14 14], 'RowSpacing', 6);
-            lbl1 = uilabel(g, 'Text', sprintf('数据集: %s', dsName));
-            lbl1.Layout.Row = 1;  lbl1.Layout.Column = [1 2];
-            lbl2 = uilabel(g, 'Text', '采样率 (Hz):');
-            lbl2.Layout.Row = 2;  lbl2.Layout.Column = 1;
-            editRate = uieditfield(g, 'numeric', 'Value', str2double(defaultVal), ...
-                'Limits', [0 Inf]);
-            editRate.Layout.Row = 2;  editRate.Layout.Column = 2;
-            btnGrid = uigridlayout(g, [1 2], 'ColumnWidth', {'1x', '1x'}, ...
-                'Padding', [0 0 0 0]);
-            btnGrid.Layout.Row = 4;
-            btnGrid.Layout.Column = [1 2];
-            uibutton(btnGrid, 'push', 'Text', '确定', ...
+            figW = 320; figH = 160;
+            ss = get(0, 'ScreenSize');
+            figX = round((ss(3) - figW) / 2);
+            figY = round((ss(4) - figH) / 2);
+            fig = uifigure('Name', '设置采样率', 'Resize', 'off', ...
+                'Position', [figX figY figW figH]);
+            pad = 14; lw = 100; bh = 28;
+            uilabel(fig, 'Text', sprintf('数据集: %s', dsName), ...
+                'Position', [pad, figH-pad-20, figW-2*pad, 20]);
+            uilabel(fig, 'Text', '采样率 (Hz):', ...
+                'Position', [pad, figH-pad-20-6-bh, lw, bh]);
+            editRate = uieditfield(fig, 'text', ...
+                'Value', defaultVal, ...
+                'Position', [pad+lw+6, figH-pad-20-6-bh, figW-2*pad-lw-6, bh]);
+            btnW = 80; btnY = pad;
+            uibutton(fig, 'push', 'Text', '确定', ...
+                'Position', [figW/2-btnW-4, btnY, btnW, bh], ...
                 'ButtonPushedFcn', @(~, ~) doOk());
-            uibutton(btnGrid, 'push', 'Text', '取消', ...
+            uibutton(fig, 'push', 'Text', '取消', ...
+                'Position', [figW/2+4, btnY, btnW, bh], ...
                 'ButtonPushedFcn', @(~, ~) delete(fig));
+            drawnow;
+            focus(editRate);
             uiwait(fig);
             function doOk()
-                v = editRate.Value;
+                v = str2double(editRate.Value);
                 if ~isnan(v) && v > 0
                     result = v;
                     delete(fig);
@@ -1208,39 +1211,43 @@ classdef TimeSeriesView < handle
         end
 
         function result = ShowSliceRangeDialog(~, colName, totalRows, defaultStart, defaultLen)
-        % ShowSliceRangeDialog 弹窗输入切片范围（uifigure + uigridlayout）
+        % ShowSliceRangeDialog 弹窗输入切片范围（uifigure + Position 定位）
         %
         % 输出：
         %   result - [start, len] 或 []
 
             result = [];
+            figW = 320; figH = 220;
+            ss = get(0, 'ScreenSize');
+            figX = round((ss(3) - figW) / 2);
+            figY = round((ss(4) - figH) / 2);
             fig = uifigure('Name', sprintf('切片范围 - %s', colName), ...
-                'WindowStyle', 'modal', 'Position', [400 350 340 200], ...
-                'Resize', 'off');
-            g = uigridlayout(fig, [5 2], ...
-                'RowHeight', {22, 28, 28, 28, 30}, ...
-                'ColumnWidth', {100, '1x'}, ...
-                'Padding', [14 14 14 14], 'RowSpacing', 6);
-            lbl = uilabel(g, 'Text', sprintf('共 %d 行', totalRows));
-            lbl.Layout.Row = 1;  lbl.Layout.Column = [1 2];
-            lbl2 = uilabel(g, 'Text', '起点行号:');
-            lbl2.Layout.Row = 2;  lbl2.Layout.Column = 1;
-            editStart = uieditfield(g, 'numeric', 'Value', defaultStart, ...
-                'Limits', [1 Inf]);
-            editStart.Layout.Row = 2;  editStart.Layout.Column = 2;
-            lbl3 = uilabel(g, 'Text', '长度:');
-            lbl3.Layout.Row = 3;  lbl3.Layout.Column = 1;
-            editLen = uieditfield(g, 'numeric', 'Value', defaultLen, ...
-                'Limits', [1 Inf]);
-            editLen.Layout.Row = 3;  editLen.Layout.Column = 2;
-            btnGrid = uigridlayout(g, [1 2], 'ColumnWidth', {'1x', '1x'}, ...
-                'Padding', [0 0 0 0]);
-            btnGrid.Layout.Row = 5;
-            btnGrid.Layout.Column = [1 2];
-            uibutton(btnGrid, 'push', 'Text', '确定', ...
+                'Resize', 'off', 'Position', [figX figY figW figH]);
+            pad = 14; lw = 100; bh = 28; gap = 6;
+            row1Y = figH - pad - 20;
+            row2Y = row1Y - gap - bh;
+            row3Y = row2Y - gap - bh;
+            uilabel(fig, 'Text', sprintf('共 %d 行', totalRows), ...
+                'Position', [pad, row1Y, figW-2*pad, 20]);
+            uilabel(fig, 'Text', '起点行号:', ...
+                'Position', [pad, row2Y, lw, bh]);
+            editStart = uieditfield(fig, 'numeric', ...
+                'Value', defaultStart, 'Limits', [1 Inf], ...
+                'Position', [pad+lw+6, row2Y, figW-2*pad-lw-6, bh]);
+            uilabel(fig, 'Text', '长度:', ...
+                'Position', [pad, row3Y, lw, bh]);
+            editLen = uieditfield(fig, 'numeric', ...
+                'Value', defaultLen, 'Limits', [1 Inf], ...
+                'Position', [pad+lw+6, row3Y, figW-2*pad-lw-6, bh]);
+            btnW = 80; btnY = pad;
+            uibutton(fig, 'push', 'Text', '确定', ...
+                'Position', [figW/2-btnW-4, btnY, btnW, bh], ...
                 'ButtonPushedFcn', @(~, ~) doOk());
-            uibutton(btnGrid, 'push', 'Text', '取消', ...
+            uibutton(fig, 'push', 'Text', '取消', ...
+                'Position', [figW/2+4, btnY, btnW, bh], ...
                 'ButtonPushedFcn', @(~, ~) delete(fig));
+            drawnow;
+            focus(editStart);
             uiwait(fig);
             function doOk()
                 s = round(editStart.Value);
