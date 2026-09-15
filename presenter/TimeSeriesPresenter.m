@@ -17,6 +17,8 @@ classdef TimeSeriesPresenter < BasePresenter
         CursorXParams_  % cell {struct('x0','dx','n','isUniform'), ...} O(1) 参数
         CursorLastIdx_  % double 上次游标索引（防抖）
         CursorActiveLine_  % cell {ax1_line, ax2_line, ...} 吸附后的曲线句柄
+        DataTipActive_     % logical DataTip 模式激活时暂停游标
+        DataCursorListener_  % listener datacursormode Enable 变化
     end
 
     methods
@@ -56,8 +58,17 @@ classdef TimeSeriesPresenter < BasePresenter
             obj.CursorXParams_ = cell(1, 6);
             obj.CursorLastIdx_ = 0;
             obj.CursorActiveLine_ = cell(1, 6);
+            obj.DataTipActive_ = false;
             obj.initCursor();
             obj.RefreshChannelTable();
+        end
+
+        function delete(obj)
+        % delete 析构：清理 datacursormode 监听
+            if ~isempty(obj.DataCursorListener_) && isvalid(obj.DataCursorListener_)
+                delete(obj.DataCursorListener_);
+            end
+            delete@BasePresenter(obj);
         end
 
         % ---- 导入 ----
@@ -1199,13 +1210,39 @@ classdef TimeSeriesPresenter < BasePresenter
         % ---- 同步游标卡尺 ----
 
         function initCursor(obj)
-        % initCursor 初始化游标管理器，注册鼠标回调
+        % initCursor 初始化游标管理器，注册鼠标回调 + DataTip 模式监听
             obj.CursorMgr = obj.View.InitCursorManager();
             obj.View.RegisterCursorMotionFcn();
+            fig = ancestor(obj.View.Grid_, 'figure');
+            if ~isempty(fig)
+                try
+                    dcm = datacursormode(fig);
+                    obj.DataCursorListener_ = addlistener(dcm, 'Enable', 'PostSet', ...
+                        @(~, ~) obj.OnDataCursorEnableChanged());
+                catch
+                end
+            end
+        end
+
+        function OnDataCursorEnableChanged(obj)
+        % OnDataCursorEnableChanged DataTip 开关：激活时隐藏游标
+            fig = ancestor(obj.View.Grid_, 'figure');
+            if isempty(fig), return; end
+            try
+                dcm = datacursormode(fig);
+                obj.DataTipActive_ = strcmpi(dcm.Enable, 'on');
+            catch
+                obj.DataTipActive_ = false;
+            end
+            if obj.DataTipActive_
+                obj.View.HideCursor();
+                obj.CursorLastIdx_ = 0;
+            end
         end
 
         function OnCursorMotion(obj, ~, evt)
         % OnCursorMotion 鼠标移动事件处理：O(1) 查找 + 防抖 + Marker 更新
+            if obj.DataTipActive_, return; end
             d = evt.Data;
             axIdx = d.axesIdx;
 
@@ -1285,7 +1322,7 @@ classdef TimeSeriesPresenter < BasePresenter
                     activeLabel = '';
                 end
                 markerData(end+1) = struct('axIdx', gAx, 'x', realX, 'y', snapY, ...
-                    'hoverText', sprintf('  X: %.6g\n  Y: %.6g', realX, snapY)); %#ok<AGROW>
+                    'hoverText', sprintf('  X: %.6g\n  Y: %s', realX, obj.formatPrecisionValue(snapY))); %#ok<AGROW>
             end
             obj.View.UpdateCursorMarkers(markerData);
             obj.UpdateCursorReadout(realX, readout);
@@ -1299,7 +1336,7 @@ classdef TimeSeriesPresenter < BasePresenter
             lines = cell(1, length(values)+1);
             lines{1} = sprintf('游标: %.6g', xVal);
             for k = 1:length(values)
-                lines{k+1} = sprintf('%s: %.6g', values{k}.Label, values{k}.Y);
+                lines{k+1} = sprintf('%s: %s', values{k}.Label, obj.formatPrecisionValue(values{k}.Y));
             end
             obj.CursorMgr.InfoLabel.Text = strjoin(lines, newline);
         end
@@ -1336,7 +1373,12 @@ classdef TimeSeriesPresenter < BasePresenter
             end
             yData = target.YData;
             if idx <= numel(yData) && ~isnan(yData(idx))
-                datatip(target, realX, yData(idx));
+                dt = datatip(target, realX, yData(idx));
+                try
+                    dt.DataTipTemplate.DataColumns(2).CustomFormatFcn = ...
+                        @(val) obj.formatPrecisionValue(val);
+                catch
+                end
             end
         end
 
@@ -1381,6 +1423,22 @@ classdef TimeSeriesPresenter < BasePresenter
             end
             obj.CursorXParams_{axesIdx} = struct(...
                 'x0', xData(1), 'dx', dx, 'n', nPts, 'isUniform', isUniform);
+        end
+
+        function str = formatPrecisionValue(~, val_mm)
+        % formatPrecisionValue 动态工程单位缩放（mm 基准）
+            absVal = abs(val_mm);
+            if absVal == 0
+                str = '0.000 nm';
+            elseif absVal >= 1
+                str = sprintf('%.3f mm', val_mm);
+            elseif absVal >= 1e-3
+                str = sprintf('%.3f um', val_mm * 1e3);
+            elseif absVal >= 1e-6
+                str = sprintf('%.3f nm', val_mm * 1e6);
+            else
+                str = sprintf('%.3f pm', val_mm * 1e9);
+            end
         end
 
         function groupAxes = getXGroup(obj, axIdx)

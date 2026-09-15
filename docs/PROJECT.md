@@ -11,6 +11,7 @@
 - **时域分析**：多数据集导入、多通道叠加显示（1-6 个 axes）、归一化、切片、通道运算
 - **频谱分析**：FFT / PSD 弹窗查看
 - **传函分析**：FRF 频响曲线（幅值/相位/相关性）
+- **游标卡尺**：O(1) 索引查找、Y 向智能吸附、悬浮坐标文本、原生 DataTip 标注、动态工程单位
 - **数据管理**：Excel 导出、采样率设置、通道重命名、数据集重命名
 
 ### 1.2 环境要求
@@ -173,6 +174,12 @@ end
 | `OnInlineRenameDataset` | 内联重命名数据集（无弹窗）→ 更新 .mat |
 | `OnExportDatasetExcel` | 导出 _review.xlsx（文件名使用数据集名） |
 | `ShowSpectrumPopup` | FFT/PSD 弹窗 |
+| `initCursor` | 初始化游标管理器 + datacursormode 监听 |
+| `OnCursorMotion` | O(1) 索引 + 智能吸附 + Marker/HoverText 更新 |
+| `OnDataCursorEnableChanged` | DataTip 开关 → 暂停/恢复游标 |
+| `CreateDatatip` | 在吸附后的曲线上创建原生 datatip |
+| `ClearDatatips` | 清除指定 axes 的 datatip |
+| `formatPrecisionValue` | 动态工程单位格式化（mm/um/nm/pm，mm 基准） |
 
 ### 4.4 SessionData — 会话状态
 
@@ -224,7 +231,42 @@ end
   → Presenter.RenderAxes → View.RenderWaveform
 ```
 
-### 5.2 通道勾选流程
+### 5.2 游标卡尺流程
+
+```
+鼠标在 axes 内移动
+  → View.onCursorMotion (WindowButtonMotionFcn)
+  → notify('CursorMotion', {axesIdx, x, mouseY})
+  → Presenter.OnCursorMotion
+    → O(1) 索引：round((x - x0) / dx) + 1（均匀数据）
+    → 防抖：idx == CursorLastIdx_ 则跳过
+    → 智能吸附：min(|yVals - mouseY|) → snapY + activeLabel
+    → 记录 CursorActiveLine_{axIdx}（供 datatip 使用）
+    → 构建 markerData → View.UpdateCursorMarkers（marker + hoverText）
+    → 构建 readout → UpdateCursorReadout（readout 面板）
+```
+
+### 5.3 DataTip 流程
+
+```
+用户点击 DataTip 工具栏按钮
+  → datacursormode(fig).Enable → 'on'
+  → PostSet 监听触发 → OnDataCursorEnableChanged
+  → DataTipActive_ = true, HideCursor
+  → 游标暂停（OnCursorMotion 直接 return）
+
+用户在线条上点击
+  → MATLAB 模式管理器拦截 → 创建原生 datatip
+
+用户右键
+  → OnAxesClicked → ClearDatatips(axesIdx)
+
+用户关闭 DataTip
+  → Enable → 'off' → DataTipActive_ = false
+  → 下次鼠标移动自动恢复游标
+```
+
+### 5.4 通道勾选流程
 
 ```
 用户勾选复选框
@@ -235,7 +277,7 @@ end
   → Presenter.RenderAxes → View.RenderWaveform
 ```
 
-### 5.3 重命名流程
+### 5.5 重命名流程
 
 ```
 用户右键 → "重命名"
@@ -271,6 +313,9 @@ end
 | 设置采样频率 | 右键→设置采样频率 | 弹窗输入，回写 .mat/.json |
 | 导出 Excel | 右键→导出 Excel | 导出 _review.xlsx |
 | 切片 | 右键→设置切片范围 | 弹窗设置起止索引 |
+| 游标卡尺 | 鼠标在 axes 内移动 | 红色竖线 + 吸附红圈 + 坐标悬浮文本 |
+| DataTip 标注 | 工具栏 DataTip 按钮 + 点击线条 | 创建原生 datatip，游标临时隐藏 |
+| 清除 datatip | 右键 axes | 清除当前 axes 的所有 datatip |
 | 切换 axes | 左键点击 axes | 高亮红色边框 + 状态栏坐标 |
 | 添加/删除 axes | 工具栏 +/- | 动态增减 axes（1-6个） |
 | 切换布局 | 工具栏 ‖/= | 单列/双列布局 |
@@ -314,7 +359,18 @@ MATLAB R2025b 的 `notify` 不支持 struct 直接传递，必须使用 `event.E
 
 通道标签格式为 `"数据集名 / 通道名"`，图例仅显示通道名（去掉数据集前缀）。
 
-### 7.6 重复导入检测
+### 7.6 HitTest 与 DataTip 共存
+
+数据线默认 `HitTest='on'`，每条线设置 `ButtonDownFcn → OnAxesButtonDown`。两条路径自然共存：
+
+- **DataTip 关闭**：点击线条 → 线的 `ButtonDownFcn` → 游标/状态栏正常
+- **DataTip 开启**：MATLAB 模式管理器拦截点击 → 创建原生 datatip
+
+`datacursormode(fig).Enable` 的 `PostSet` 监听用于暂停游标（避免游标与 datatip 重叠）。
+
+**注意**：App Designer (`uifigure`) 中 `fig.ModeManager` 不可靠，应使用 `datacursormode(fig)` 或 `uigetmodemanager(fig)`。
+
+### 7.7 重复导入检测
 
 当前基于 `.mat` 文件路径去重（`strcmp(results{i}.matPath, existingPaths)`）。后续计划改为基于数据矩阵 hash 值。
 
@@ -346,6 +402,8 @@ MATLAB R2025b 的 `notify` 不支持 struct 直接传递，必须使用 `event.E
 
 | 提交 | 说明 |
 |------|------|
+| `d6c492e` | DataTip 修复：移除 HitTest='off'，线条加 ButtonDownFcn |
+| `a6f3120` | 游标：O(1) 查找、智能吸附、悬浮文本、datatip、工程单位 |
 | `6b4ba59` | UI polish: AppEventData 迁移、布局修复、图例改进 |
 | `fdcd7ec` | 修复隐藏控件：uigridlayout settle + 延迟 legend 刷新 |
 | `b661f40` | Phase 4: 时域 MVP presenter，移除旧 UI |

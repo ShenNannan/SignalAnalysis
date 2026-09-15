@@ -65,7 +65,17 @@
 
 | # | 操作 | 触发 | 事件 | 载荷 | Presenter 处理 |
 |---|------|------|------|------|----------------|
-| 26 | 点击 axes | ButtonDownFcn | `AxesClicked` | `{axesIdx, x, y}` | `OnAxesClicked` → SyncViewAxisState + 状态栏更新（含自定义横轴数据集名） |
+| 26 | 点击 axes/线条 | ButtonDownFcn | `AxesClicked` | `{axesIdx, x, y}` | `OnAxesClicked` → SyncViewAxisState + 状态栏更新（含自定义横轴数据集名） |
+| 27 | 右键 axes/线条 | ButtonDownFcn | `AxesClicked` | `{axesIdx, x, y}` | `OnAxesClicked` → `ClearDatatips(axesIdx)` |
+| 28 | 鼠标在 axes 内移动 | WindowButtonMotionFcn | `CursorMotion` | `{axesIdx, x, mouseY}` | `OnCursorMotion` → O(1) 索引 + 智能吸附 + Marker/HoverText 更新 |
+
+**点击路由机制**：
+
+数据线默认 `HitTest='on'`，每条线设置 `ButtonDownFcn → OnAxesButtonDown(axesIdx, e)`。点击穿透路径：
+- 点击线条 → 线的 `ButtonDownFcn` 触发 → `OnAxesButtonDown` → `AxesClicked` 事件
+- 点击空白区域 → axes 的 `ButtonDownFcn` 触发 → `OnAxesButtonDown` → `AxesClicked` 事件
+
+两条路径汇入同一个处理器，游标/状态栏/DataTip 互不干扰。
 
 ---
 
@@ -224,9 +234,112 @@ SyncViewAxisState(axIdx)
 
 ---
 
-## 九、RenderWaveform 渲染细节
+## 九、游标卡尺系统
 
-### 9.1 清除与重置
+### 9.0 架构概览
+
+```
+鼠标移动 → View.onCursorMotion (WindowButtonMotionFcn)
+  → notify('CursorMotion', {axesIdx, x, mouseY})
+  → Presenter.OnCursorMotion
+    → O(1) 索引推算 (CursorXParams_ 缓存)
+    → 索引防抖 (CursorLastIdx_)
+    → 智能吸附：min(|yVals - mouseY|) 找最近通道
+    → 记录吸附线句柄 (CursorActiveLine_)
+    → 构建 markerData → View.UpdateCursorMarkers
+    → 构建 readout → UpdateCursorReadout
+```
+
+### 9.0.1 O(1) 索引查找
+
+数据均匀时用公式推算，避免 `min(abs(xData - x))` 全量扫描：
+
+```matlab
+params = CursorXParams_{axIdx};  % struct('x0','dx','n','isUniform')
+if params.isUniform
+    idx = round((x - params.x0) / params.dx) + 1;
+    idx = max(1, min(params.n, idx));
+else
+    [~, idx] = min(abs(xData - x));  % 回退
+end
+```
+
+缓存在 `buildXData` 中构建，数据变化时通过 `InvalidateCursorCache` 失效。
+
+### 9.0.2 Y 向智能吸附
+
+每轴一个红圈 marker，自动吸附到离鼠标 Y 坐标最近的通道：
+
+```matlab
+validMask = ~isnan(yVals);
+[~, nearestK] = min(abs(yVals(validMask) - d.mouseY));
+snapY = yVals(validIdx(nearestK));
+```
+
+吸附结果存入 `CursorActiveLine_{axIdx}`，供 `CreateDatatip` 使用。
+
+### 9.0.3 悬浮文本
+
+marker 旁显示坐标，1.5% 偏移避免遮挡：
+
+```matlab
+set(hoverTexts{axIdx}, 'Position', [md.x + xOffset, md.y + yOffset], ...
+    'String', md.hoverText, 'Visible', 'on');
+```
+
+Y 值使用动态工程单位格式化（`formatEngValue`）：自动选择 mm/um/nm/pm。
+
+### 9.0.4 DataTip 集成
+
+两条路径自然共存，无需检测模式状态：
+
+| 状态 | 点击目标 | 行为 |
+|------|----------|------|
+| DataTip 关闭 | 线条 | `ButtonDownFcn` → `OnAxesButtonDown` → 游标/状态栏 |
+| DataTip 关闭 | 空白 | axes `ButtonDownFcn` → `OnAxesButtonDown` → 游标/状态栏 |
+| DataTip 开启 | 线条 | MATLAB 模式管理器拦截 → 创建原生 datatip |
+| DataTip 开启 | 空白 | 无操作 |
+
+`datacursormode(fig).Enable` 的 `PostSet` 监听用于暂停游标（`DataTipActive_` 标志）：
+
+```matlab
+dcm = datacursormode(fig);
+addlistener(dcm, 'Enable', 'PostSet', @(~, ~) obj.OnDataCursorEnableChanged());
+% 激活 → HideCursor + DataTipActive_=true → OnCursorMotion 直接 return
+% 关闭 → DataTipActive_=false → 下次鼠标移动自动恢复
+```
+
+右键清除当前 axes 的 datatip：`delete(findall(ax, 'Type', 'datatip'))`。
+
+### 9.0.5 动态工程单位
+
+`formatPrecisionValue(val_mm)` 以 mm 为基准，根据绝对值自动选择单位：
+
+| 范围（mm） | 单位 | 格式 |
+| --- | --- | --- |
+| ≥ 1 mm | mm | `%.3f mm` |
+| ≥ 1e-3 mm | um | `%.3f um` |
+| ≥ 1e-6 mm | nm | `%.3f nm` |
+| < 1e-6 mm | pm | `%.3f pm` |
+
+应用于：悬浮文本 Y 值、readout 面板 Y 值、datatip `CustomFormatFcn`。
+
+### 9.0.6 悬浮文本偏移
+
+悬浮文本相对于吸附交点偏移 1.5%（X/Y 各取 axes 范围的 1.5%），避免遮挡数据：
+
+```matlab
+xl = xlim(ax); yl = ylim(ax);
+xOffset = 0.015 * (xl(2) - xl(1));
+yOffset = 0.015 * (yl(2) - yl(1));
+set(hoverText, 'Position', [md.x + xOffset, md.y + yOffset], ...);
+```
+
+---
+
+## 十、RenderWaveform 渲染细节
+
+### 10.1 清除与重置
 
 ```matlab
 delete(allchild(ax));           % 清除两侧所有线条（yyaxis 安全）
@@ -235,7 +348,7 @@ ax.LineStyleOrderIndex = 1;     % 重置线型循环索引
 ax.ColorOrderIndex = 1;         % 重置颜色循环索引
 ```
 
-### 9.2 颜色分配
+### 10.2 颜色分配
 
 使用 `ChannelColorIndex(datasetIdx, colIdx, nColors)` 哈希分配颜色：
 ```matlab
@@ -243,7 +356,7 @@ mod((datasetIdx-1)*7 + colIdx, nColors) + 1
 ```
 保证同一通道在反复勾选/取消时颜色稳定。
 
-### 9.3 线型规则
+### 10.3 线型规则
 
 | 位置 | LineStyle | Tag |
 |------|-----------|-----|
@@ -251,14 +364,16 @@ mod((datasetIdx-1)*7 + colIdx, nColors) + 1
 | 右Y通道 | `'--'`（虚线） | `'rightY'` |
 | 普通模式（无右Y） | `'-'`（实线） | 无 |
 
-### 9.4 Legend
+### 10.4 Legend + ButtonDownFcn
 
 - 通道数 ≥ 2：显示 legend（`'Interpreter','none'`, `'Location','northwest'`）
 - 通道数 = 1：`legend(ax, 'off')`
 
+**ButtonDownFcn**：每条数据线创建后设置 `h.ButtonDownFcn = @(s,e) obj.OnAxesButtonDown(axesIdx, e)`，与 axes 的 `ButtonDownFcn` 共用同一处理器，确保点击线条也能触发游标/状态栏逻辑。
+
 ---
 
-## 十、ExportFigure 导出逻辑
+## 十一、ExportFigure 导出逻辑
 
 ### 10.1 线条过滤
 
@@ -299,7 +414,7 @@ fig.CloseRequestFcn = @(s, e) obj.RemovePopup(fig);
 
 ---
 
-## 十一、LinkXAxes 链接逻辑
+## 十二、LinkXAxes 链接逻辑
 
 `LinkXAxes` 按X通道引用分组链接，不同自定义横轴的 axes 不互相链接：
 
@@ -314,7 +429,7 @@ fig.CloseRequestFcn = @(s, e) obj.RemovePopup(fig);
 
 ---
 
-## 十二、传函分析 (`view/TransferFunctionView.m`)
+## 十三、传函分析 (`view/TransferFunctionView.m`)
 
 | # | 操作 | 触发 | 事件 | 载荷 | Presenter 处理 |
 |---|------|------|------|------|----------------|
@@ -325,7 +440,7 @@ fig.CloseRequestFcn = @(s, e) obj.RemovePopup(fig);
 
 ---
 
-## 十三、未被 Presenter 监听的事件
+## 十四、未被 Presenter 监听的事件
 
 | 事件 | 原因 |
 |------|------|
@@ -334,7 +449,7 @@ fig.CloseRequestFcn = @(s, e) obj.RemovePopup(fig);
 
 ---
 
-## 十四、Presenter 调用 View 的方法汇总
+## 十五、Presenter 调用 View 的方法汇总
 
 | View 方法 | 被哪些 Presenter 方法调用 |
 |-----------|--------------------------|
@@ -351,7 +466,7 @@ fig.CloseRequestFcn = @(s, e) obj.RemovePopup(fig);
 
 ---
 
-## 十五、状态栏消息 (`StatusCallback`)
+## 十六、状态栏消息 (`StatusCallback`)
 
 | 位置 | 消息 |
 |------|------|
@@ -366,7 +481,7 @@ fig.CloseRequestFcn = @(s, e) obj.RemovePopup(fig);
 
 ---
 
-## 十六、右键菜单路由逻辑
+## 十七、右键菜单路由逻辑
 
 ```
 OnContextMenuOpening()           ← 右键时自动选中最近左键点击的行
@@ -399,7 +514,7 @@ OnContextChannelAction(action)   ← 通道级操作（子行）
 
 ---
 
-## 十七、Session 状态管理汇总
+## 十八、Session 状态管理汇总
 
 ### 17.1 横轴/右Y轴状态清理时机
 

@@ -440,7 +440,11 @@ classdef TimeSeriesView < handle
                 if axIdx < 1 || axIdx > numel(markers), continue; end
                 if isnan(md.y), continue; end
                 set(markers{axIdx}, 'XData', md.x, 'YData', md.y, 'Visible', 'on');
-                set(hoverTexts{axIdx}, 'Position', [md.x, md.y], ...
+                xl = xlim(obj.AxesHandles_{axIdx});
+                yl = ylim(obj.AxesHandles_{axIdx});
+                xOffset = 0.015 * (xl(2) - xl(1));
+                yOffset = 0.015 * (yl(2) - yl(1));
+                set(hoverTexts{axIdx}, 'Position', [md.x + xOffset, md.y + yOffset], ...
                     'String', md.hoverText, 'Visible', 'on');
             end
         end
