@@ -19,6 +19,7 @@ classdef TimeSeriesPresenter < BasePresenter
         CursorActiveLine_  % cell {ax1_line, ax2_line, ...} 吸附后的曲线句柄
         DataTipActive_     % logical DataTip 模式激活时暂停游标
         DataCursorListener_  % listener datacursormode Enable 变化
+        DataLinesCache_    % cell {ax1_lines, ax2_lines, ...} findobj 缓存
     end
 
     methods
@@ -41,7 +42,6 @@ classdef TimeSeriesPresenter < BasePresenter
             obj.TrackListener(addlistener(view, 'SpectrumClicked', @obj.OnSpectrumClicked));
             obj.TrackListener(addlistener(view, 'NormClicked', @obj.OnNormalize));
             obj.TrackListener(addlistener(view, 'CalcClicked', @obj.OnCalcChannel));
-            obj.TrackListener(addlistener(view, 'RenameChannelClicked', @obj.OnRenameChannel));
             obj.TrackListener(addlistener(view, 'SliceDialogClicked', @obj.OnSliceDialog));
             obj.TrackListener(addlistener(view, 'SliceResetClicked', @obj.OnSliceReset));
             obj.TrackListener(addlistener(view, 'AxesClicked', @obj.OnAxesClicked));
@@ -59,6 +59,7 @@ classdef TimeSeriesPresenter < BasePresenter
             obj.CursorLastIdx_ = 0;
             obj.CursorActiveLine_ = cell(1, 6);
             obj.DataTipActive_ = false;
+            obj.DataLinesCache_ = cell(1, 6);
             obj.initCursor();
             obj.RefreshChannelTable();
         end
@@ -79,7 +80,7 @@ classdef TimeSeriesPresenter < BasePresenter
             if isempty(startPath)
                 startPath = pwd;
             end
-            rootDir = FileExplorer.SelectFolder(startPath);
+            rootDir = ViewUtils.SelectFolder(startPath);
             if isempty(rootDir)
                 return;
             end
@@ -105,7 +106,7 @@ classdef TimeSeriesPresenter < BasePresenter
             startPath = obj.Session.GetLastPath(1);
             if isempty(startPath), startPath = pwd; end
 
-            [~, filePaths] = FileExplorer.SelectFiles(startPath, ...
+            [~, filePaths] = ViewUtils.SelectFiles(startPath, ...
                 {'*.dat;*.csv;*.txt;*.xlsx;*.mat', 'Data Files (*.dat;*.csv;*.txt;*.xlsx;*.mat)'});
             if isempty(filePaths)
                 return;
@@ -237,7 +238,7 @@ classdef TimeSeriesPresenter < BasePresenter
                     continue;
                 end
 
-                [sig, xSig] = obj.SliceChannel(chan, xRaw, hasXChannel);
+                [sig, xSig] = ChannelOperations.SliceAndAlign(chan.Data, xRaw, chan.SliceRange, hasXChannel);
                 sig = obj.ApplyNorm(axesIdx, c, sig);
 
                 leftIdx = leftIdx + 1;
@@ -255,7 +256,7 @@ classdef TimeSeriesPresenter < BasePresenter
                     ref = rightYRefs{ri};
                     rightYChan = obj.FindChannelInList(chans, ref.DatasetIdx, ref.ColIdx);
                     if ~isempty(rightYChan)
-                        [rySig, ryX] = obj.SliceChannel(rightYChan, xRaw, hasXChannel);
+                        [rySig, ryX] = ChannelOperations.SliceAndAlign(rightYChan.Data, xRaw, rightYChan.SliceRange, hasXChannel);
                         rightColor = colors{obj.ChannelColorIndex(rightYChan.DatasetIdx, rightYChan.ColIdx, length(colors))};
                         [~, shortLabel] = strtok(rightYChan.Label, '/');
                         if isempty(shortLabel)
@@ -271,30 +272,13 @@ classdef TimeSeriesPresenter < BasePresenter
             end
 
             obj.View.RenderWaveform(axesIdx, xCell, yCell, labels, colorList, rightYData);
-        end
 
-        function [sig, xSig] = SliceChannel(~, chan, xRaw, hasXChannel)
-        % SliceChannel 对通道数据和横轴数据做切片并对齐
-            if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
-                sr = chan.SliceRange;
-                sig = ChannelOperations.ApplySlice(chan.Data, sr(1), sr(2));
-                if hasXChannel
-                    xSig = ChannelOperations.ApplySlice(xRaw, sr(1), sr(2));
-                    n = min(length(xSig), length(sig));
-                    xSig = xSig(1:n);
-                    sig = sig(1:n);
-                else
-                    xSig = (0:length(sig)-1)';
-                end
-            else
-                sig = chan.Data;
-                if hasXChannel
-                    n = min(length(xRaw), length(sig));
-                    xSig = xRaw(1:n);
-                    sig = sig(1:n);
-                else
-                    xSig = (0:length(sig)-1)';
-                end
+            % 缓存 dataLines 供 OnCursorMotion 使用
+            ax = obj.View.GetAxes(axesIdx);
+            if ~isempty(ax) && isvalid(ax)
+                allLines = findobj(ax, 'Type', 'line');
+                tagMask = arrayfun(@(l) ~strcmp(l.Tag, 'cursor'), allLines);
+                obj.DataLinesCache_{axesIdx} = allLines(tagMask);
             end
         end
 
@@ -561,22 +545,7 @@ classdef TimeSeriesPresenter < BasePresenter
             channelStats = {};
             for i = 1:length(chans)
                 chan = chans{i};
-                % 切片
-                if isfield(chan, 'SliceRange') && ~isempty(chan.SliceRange)
-                    sr = chan.SliceRange;
-                    sig = ChannelOperations.ApplySlice(chan.Data, sr(1), sr(2));
-                    if hasXChannel
-                        xSig = ChannelOperations.ApplySlice(xRaw, sr(1), sr(2));
-                        n = min(length(xSig), length(sig));
-                        xSig = xSig(1:n); sig = sig(1:n);
-                    end
-                else
-                    sig = chan.Data;
-                    if hasXChannel
-                        n = min(length(xRaw), length(sig));
-                        xSig = xRaw(1:n); sig = sig(1:n);
-                    end
-                end
+                [sig, xSig] = ChannelOperations.SliceAndAlign(chan.Data, xRaw, chan.SliceRange, hasXChannel);
 
                 if hasXChannel
                     % 逻辑索引：物理坐标范围 → 数据子集
@@ -673,23 +642,6 @@ classdef TimeSeriesPresenter < BasePresenter
                     return;
                 end
             end
-        end
-
-        function OnRenameChannel(obj, ~, evt)
-            d = evt.Data;
-            ds = obj.Session.GetDataset(d.datasetIdx);
-            currentName = ds.GetColumnName(d.colIdx);
-            answer = inputdlg('新列名:', '重命名通道', 1, {currentName});
-            if isempty(answer), return; end
-
-            newName = strtrim(answer{1});
-            if isempty(newName) || strcmp(newName, currentName)
-                return;
-            end
-
-            obj.RenameChannel(d.datasetIdx, d.colIdx, newName);
-            obj.RefreshChannelTable();
-            obj.RenderAxes(obj.View.GetFocusedAxes());
         end
 
         function OnInlineRenameChannel(obj, ~, evt)
@@ -813,19 +765,13 @@ classdef TimeSeriesPresenter < BasePresenter
                 switch lower(analysisType)
                     case 'fft'
                         [P1, freq] = SignalProcessor.ComputeFFTSingleSided(sig, sampleRate);
-                        if abs(freq(1)) < eps
-                            semilogx(ax2, freq(2:end), P1(2:end), 'Color', chanColor, 'DisplayName', chanLabel);
-                        else
-                            semilogx(ax2, freq, P1, 'Color', chanColor, 'DisplayName', chanLabel);
-                        end
+                        [freq, P1] = SignalProcessor.SkipZeroFreq(freq, P1);
+                        semilogx(ax2, freq, P1, 'Color', chanColor, 'DisplayName', chanLabel);
                     case 'psd'
                         [cumRms, freq, totalRms] = SignalProcessor.ComputeCumulativeRMS(sig, sampleRate);
                         label = sprintf('%s (RMS=%.4f)', chanLabel, totalRms);
-                        if abs(freq(1)) < eps
-                            semilogx(ax2, freq(2:end), cumRms(2:end), 'Color', chanColor, 'DisplayName', label);
-                        else
-                            semilogx(ax2, freq, cumRms, 'Color', chanColor, 'DisplayName', label);
-                        end
+                        [freq, cumRms] = SignalProcessor.SkipZeroFreq(freq, cumRms);
+                        semilogx(ax2, freq, cumRms, 'Color', chanColor, 'DisplayName', label);
                 end
             end
 
@@ -1199,7 +1145,7 @@ classdef TimeSeriesPresenter < BasePresenter
 
             matPath = obj.Session.GetDatasetPath(datasetIdx);
             if ~isempty(matPath)
-                DataReaderFactory.UpdateColumnNamesInMat(matPath, newNames);
+                DataReaderFactory.UpdateColumnNamesInMeta(matPath, newNames);
             end
         end
 
@@ -1295,43 +1241,30 @@ classdef TimeSeriesPresenter < BasePresenter
                     end
                     labels{k} = chans{k}.Label;
                 end
-                % 智能吸附：找离 mouseY 最近的有效通道
-                % 双Y轴时左右坐标系不同，统一归一化到 axes 0-1 再比较
-                validMask = ~isnan(yVals);
-                if any(validMask)
-                    ax = obj.View.GetAxes(gAx);
-                    yyaxis(ax, 'left'); ylL = get(ax, 'YLim');
-                    yyaxis(ax, 'right'); ylR = get(ax, 'YLim');
-                    yyaxis(ax, 'left');
-                    mouseNorm = (d.mouseY - ylL(1)) / (ylL(2) - ylL(1));
-                    dists = nan(1, length(yVals));
-                    rightYRefs = obj.Session.GetRightYChannel(gAx);
-                    for vi = find(validMask)
-                        isRightY = false;
-                        for ri = 1:length(rightYRefs)
-                            if rightYRefs{ri}.DatasetIdx == chans{vi}.DatasetIdx && ...
-                               rightYRefs{ri}.ColIdx == chans{vi}.ColIdx
-                                isRightY = true;
-                                break;
-                            end
+
+                % 智能吸附：构建右Y轴掩码后调用纯函数
+                ax = obj.View.GetAxes(gAx);
+                yyaxis(ax, 'left'); ylL = get(ax, 'YLim');
+                yyaxis(ax, 'right'); ylR = get(ax, 'YLim');
+                yyaxis(ax, 'left');
+                rightYRefs = obj.Session.GetRightYChannel(gAx);
+                isRightYMask = false(1, length(chans));
+                for k = 1:length(chans)
+                    for ri = 1:length(rightYRefs)
+                        if rightYRefs{ri}.DatasetIdx == chans{k}.DatasetIdx && ...
+                           rightYRefs{ri}.ColIdx == chans{k}.ColIdx
+                            isRightYMask(k) = true;
+                            break;
                         end
-                        if isRightY
-                            valNorm = (yVals(vi) - ylR(1)) / (ylR(2) - ylR(1));
-                        else
-                            valNorm = (yVals(vi) - ylL(1)) / (ylL(2) - ylL(1));
-                        end
-                        dists(vi) = abs(valNorm - mouseNorm);
                     end
-                    [~, nearestK] = min(dists(validMask));
-                    validIdx = find(validMask);
-                    activeK = validIdx(nearestK);
-                    snapY = yVals(activeK);
+                end
+                [activeK, snapY] = ChannelOperations.SnapToNearestChannel(...
+                    yVals, d.mouseY, ylL, ylR, isRightYMask);
+
+                if activeK > 0
                     activeLabel = labels{activeK};
-                    % 记录吸附后的曲线句柄
-                    allLines = findobj(obj.View.GetAxes(gAx), 'Type', 'line');
-                    tagMask = arrayfun(@(l) ~strcmp(l.Tag, 'cursor'), allLines);
-                    dataLines = allLines(tagMask);
-                    % 匹配 DisplayName 到 Label（去掉数据集前缀）
+                    % 记录吸附后的曲线句柄（使用缓存）
+                    dataLines = obj.DataLinesCache_{gAx};
                     obj.CursorActiveLine_{gAx} = [];
                     for ml = 1:numel(dataLines)
                         if contains(activeLabel, dataLines(ml).DisplayName)
@@ -1343,7 +1276,6 @@ classdef TimeSeriesPresenter < BasePresenter
                         obj.CursorActiveLine_{gAx} = dataLines(1);
                     end
                 else
-                    snapY = NaN;
                     activeLabel = '';
                 end
                 markerData(end+1) = struct('axIdx', gAx, 'x', realX, 'y', snapY, ...
@@ -1367,43 +1299,12 @@ classdef TimeSeriesPresenter < BasePresenter
         end
 
         function InvalidateCursorCache(obj, axIdx)
-        % InvalidateCursorCache 使指定 axes 的 x-data 缓存失效
+        % InvalidateCursorCache 使指定 axes 的 x-data 和 dataLines 缓存失效
             if axIdx >= 1 && axIdx <= numel(obj.CursorXData_)
                 obj.CursorXData_{axIdx} = [];
             end
-        end
-
-        function CreateDatatip(obj, axIdx, ~, ~)
-        % CreateDatatip 在吸附后的活跃曲线上创建原生 datatip
-            xData = obj.CursorXData_{axIdx};
-            if isempty(xData), return; end
-            idx = max(1, min(length(xData), obj.CursorLastIdx_));
-            realX = xData(idx);
-
-            % 使用吸附时记录的活跃曲线
-            target = [];
-            if axIdx <= numel(obj.CursorActiveLine_) && ~isempty(obj.CursorActiveLine_{axIdx})
-                if isgraphics(obj.CursorActiveLine_{axIdx})
-                    target = obj.CursorActiveLine_{axIdx};
-                end
-            end
-            % 回退：找 axes 中第一条非游标线
-            if isempty(target)
-                ax = obj.View.GetAxes(axIdx);
-                allLines = findobj(ax, 'Type', 'line');
-                mask = arrayfun(@(l) ~strcmp(l.Tag, 'cursor'), allLines);
-                dataLines = allLines(mask);
-                if isempty(dataLines), return; end
-                target = dataLines(1);
-            end
-            yData = target.YData;
-            if idx <= numel(yData) && ~isnan(yData(idx))
-                dt = datatip(target, realX, yData(idx));
-                try
-                    dt.DataTipTemplate.DataColumns(2).CustomFormatFcn = ...
-                        @(val) obj.formatPrecisionValue(val);
-                catch % CustomFormatFcn 在旧版 MATLAB 中可能不支持
-                end
+            if axIdx >= 1 && axIdx <= numel(obj.DataLinesCache_)
+                obj.DataLinesCache_{axIdx} = [];
             end
         end
 

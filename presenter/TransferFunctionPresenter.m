@@ -26,7 +26,7 @@ classdef TransferFunctionPresenter < BasePresenter
             if isempty(startPath) || ~exist(startPath, 'dir')
                 startPath = pwd;
             end
-            folder = FileExplorer.SelectFolder(startPath);
+            folder = ViewUtils.SelectFolder(startPath);
             if ~isempty(folder)
                 obj.View.SetPath(folder);
             end

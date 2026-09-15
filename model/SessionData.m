@@ -10,7 +10,6 @@ classdef SessionData < handle
         DatasetPaths_   cell      % {path1, path2, ...}
         AxesData_       cell      % 每个 axes 的通道列表 struct
         AxesNormMode_   cell      % 每个 axes 的归一化模式
-        FocusedAxes_    double    % 当前聚焦的 axes 索引
         MaxAxes_        double    % axes 数量上限
         LastPaths_      cell      % 最近使用的路径
         AxesNormParams_     cell  % 每个 axes 的归一化参数 struct
@@ -22,7 +21,6 @@ classdef SessionData < handle
         DatasetCount    double    % 数据集数量
         AxesCount       double    % 当前 axes 数量（有通道的）
         AxesSlotCount   double    % axes 槽位总数（含空槽）
-        FocusedAxes     double    % 当前聚焦的 axes
     end
 
     events
@@ -42,7 +40,6 @@ classdef SessionData < handle
             obj.DatasetPaths_ = {};
             obj.AxesData_ = {};
             obj.AxesNormMode_ = {};
-            obj.FocusedAxes_ = 1;
             obj.LastPaths_ = cell(1, 4);
             obj.AxesNormParams_ = {};
             obj.AxesXChannel_ = {};
@@ -165,11 +162,6 @@ classdef SessionData < handle
             notify(obj, 'DatasetsUpdated');
         end
 
-        function tf = HasDataset(obj)
-        % HasDataset 是否有数据集
-            tf = ~isempty(obj.Datasets_);
-        end
-
         function ds = GetDataset(obj, idx)
         % GetDataset 获取指定数据集
             if idx < 1 || idx > obj.DatasetCount
@@ -214,10 +206,8 @@ classdef SessionData < handle
                 return;
             end
 
-            % 扩展 AxesData_ 如果需要
-            while length(obj.AxesData_) < axesIdx
-                obj.AxesData_{end+1} = struct('Channels', {{}}); %#ok<AGROW>
-            end
+            % 扩展所有 axes 容器到目标索引
+            obj.ensureAxesCapacity(axesIdx);
             if isempty(obj.AxesData_{axesIdx})
                 obj.AxesData_{axesIdx} = struct('Channels', {{}});
             end
@@ -238,20 +228,6 @@ classdef SessionData < handle
             chan.Label = [obj.DatasetNames_{datasetIdx} ' / ' ds.GetDisplayLabel(colIdx)];
             chan.SliceRange = [1, size(chan.Data, 1)];
             obj.AxesData_{axesIdx}.Channels{end+1} = chan;
-
-            % 确保 AxesNormMode_ 同步
-            while length(obj.AxesNormMode_) < axesIdx
-                obj.AxesNormMode_{end+1} = 'none'; %#ok<AGROW>
-            end
-            while length(obj.AxesXChannel_) < axesIdx
-                obj.AxesXChannel_{end+1} = []; %#ok<AGROW>
-            end
-            while length(obj.AxesRightYChannel_) < axesIdx
-                obj.AxesRightYChannel_{end+1} = {}; %#ok<AGROW>
-            end
-            while length(obj.AxesNormParams_) < axesIdx
-                obj.AxesNormParams_{end+1} = struct(); %#ok<AGROW>
-            end
 
             notify(obj, 'ChannelsUpdated');
         end
@@ -321,22 +297,6 @@ classdef SessionData < handle
 
         % ---- Axes 数量管理 ----
 
-        function AddAxes(obj)
-        % AddAxes 扩展 axes 容量（同步 AxesNormMode_）
-            while length(obj.AxesData_) < obj.MaxAxes_
-                obj.AxesData_{end+1} = struct('Channels', {{}}); %#ok<AGROW>
-            end
-            while length(obj.AxesNormMode_) < obj.MaxAxes_
-                obj.AxesNormMode_{end+1} = 'none'; %#ok<AGROW>
-            end
-            while length(obj.AxesXChannel_) < obj.MaxAxes_
-                obj.AxesXChannel_{end+1} = []; %#ok<AGROW>
-            end
-            while length(obj.AxesRightYChannel_) < obj.MaxAxes_
-                obj.AxesRightYChannel_{end+1} = {}; %#ok<AGROW>
-            end
-        end
-
         function RemoveAxes(obj, idx)
         % RemoveAxes 移除指定 axes 的通道
             if idx >= 1 && idx <= length(obj.AxesData_)
@@ -355,15 +315,6 @@ classdef SessionData < handle
                 obj.AxesRightYChannel_{idx} = {};
             end
             notify(obj, 'ChannelsUpdated');
-        end
-
-        % ---- 聚焦 ----
-
-        function SetFocusedAxes(obj, idx)
-        % SetFocusedAxes 设置聚焦的 axes
-            if idx >= 1 && idx <= obj.MaxAxes_
-                obj.FocusedAxes_ = idx;
-            end
         end
 
         % ---- 采样率 ----
@@ -560,9 +511,26 @@ classdef SessionData < handle
         function val = get.AxesSlotCount(obj)
             val = length(obj.AxesData_);
         end
+    end
 
-        function val = get.FocusedAxes(obj)
-            val = obj.FocusedAxes_;
+    methods (Access = private)
+        function ensureAxesCapacity(obj, axesIdx)
+        % ensureAxesCapacity 确保所有 axes 容器至少有 axesIdx 个槽位
+            while length(obj.AxesData_) < axesIdx
+                obj.AxesData_{end+1} = struct('Channels', {{}}); %#ok<AGROW>
+            end
+            while length(obj.AxesNormMode_) < axesIdx
+                obj.AxesNormMode_{end+1} = 'none'; %#ok<AGROW>
+            end
+            while length(obj.AxesXChannel_) < axesIdx
+                obj.AxesXChannel_{end+1} = []; %#ok<AGROW>
+            end
+            while length(obj.AxesRightYChannel_) < axesIdx
+                obj.AxesRightYChannel_{end+1} = {}; %#ok<AGROW>
+            end
+            while length(obj.AxesNormParams_) < axesIdx
+                obj.AxesNormParams_{end+1} = struct(); %#ok<AGROW>
+            end
         end
     end
 end

@@ -280,97 +280,6 @@ classdef DataReaderFactory
             end
         end
 
-        function results = ImportFiles(filePaths, outputDir, varargin)
-        % ImportFiles 导入一个或多个文件，单通道合并，多通道各自保存
-        %
-        % 输入：
-        %   filePaths - cell 文件路径列表（支持单个或多个）
-        %   outputDir - char 输出目录
-        %   varargin  - 'MergeSingleCol', true/false（默认 true）
-        %
-        % 输出：
-        %   results - struct 数组，每项 .name, .matPath
-
-            p = inputParser;
-            addRequired(p, 'filePaths', @iscell);
-            addRequired(p, 'outputDir', @ischar);
-            addParameter(p, 'MergeSingleCol', true, @islogical);
-            parse(p, filePaths, outputDir, varargin{:});
-            mergeSingleCol = p.Results.MergeSingleCol;
-
-            results = struct('name', {}, 'matPath', {});
-
-            % 过滤掉生成文件（_standardized.mat, _meta.json, _review.xlsx）
-            filePaths = filePaths(cellfun(@(f) ~DataReaderFactory.IsGeneratedFile(f), filePaths));
-            if isempty(filePaths)
-                error('DataReaderFactory:NoData', '没有可导入的数据');
-            end
-
-            % Step 1: 读取所有文件的数据矩阵和原始列名
-            parsed = {};
-            importWarnings = {};
-            for i = 1:length(filePaths)
-                try
-                    [data, rawNames, formatTag] = DataReaderFactory.ReadDataMatrix(filePaths{i});
-                    [~, fname] = fileparts(filePaths{i});
-                    parsed{end+1} = struct('path', filePaths{i}, 'data', data, ...
-                        'rawNames', {rawNames}, 'formatTag', formatTag, 'fname', fname, ...
-                        'nCols', size(data,2), 'nRows', size(data,1)); %#ok<AGROW>
-                catch e
-                    [~, fname] = fileparts(filePaths{i});
-                    importWarnings{end+1} = sprintf('%s: %s', fname, e.message); %#ok<AGROW>
-                end
-            end
-            if ~isempty(importWarnings)
-                warning('SignalAnalysis:DataReaderFactory:ImportPartialFail', ...
-                    '以下文件导入失败:\n%s', strjoin(importWarnings, '\n'));
-            end
-
-            if isempty(parsed)
-                error('DataReaderFactory:NoData', '没有可导入的数据');
-            end
-
-            % Step 2: 判断合并策略
-            allSingleCol = mergeSingleCol && all(cellfun(@(item) item.nCols == 1, parsed));
-
-            if allSingleCol
-                % 全部单通道：合并（单文件时 MergeParsed 返回原始数据）
-                [merged, colNames] = DataReaderFactory.MergeParsed(parsed);
-                srcPaths = cellfun(@(p) p.path, parsed, 'UniformOutput', false);
-                sourcePath = strjoin(srcPaths, ';');
-                if length(parsed) == 1, sourcePath = srcPaths{1}; end
-
-                % 命名：多文件用共同父文件夹名，单文件用文件名
-                if length(parsed) > 1
-                    parentDirs = cellfun(@fileparts, srcPaths, 'UniformOutput', false);
-                    sharedDir = parentDirs{1};
-                    allSameDir = all(cellfun(@(d) strcmp(d, sharedDir), parentDirs));
-                    if allSameDir
-                        [~, baseName] = fileparts(sharedDir);
-                    else
-                        baseName = parsed{1}.fname;
-                    end
-                else
-                    baseName = parsed{1}.fname;
-                end
-                matPath = DataReaderFactory.SaveStandard(merged, colNames, outputDir, ...
-                    baseName, sourcePath, 'merged');
-                results(end+1).name = baseName;
-                results(end).matPath = matPath;
-
-            else
-                % 多通道或多文件混合：各自保存
-                for i = 1:length(parsed)
-                    item = parsed{i};
-                    [colNames, cleanData] = DataReaderFactory.MatchColumnNames(item.rawNames, item.data);
-                    matPath = DataReaderFactory.SaveStandard(cleanData, colNames, outputDir, ...
-                        item.fname, item.path, item.formatTag);
-                    results(end+1).name = item.fname;
-                    results(end).matPath = matPath;
-                end
-            end
-        end
-
         function UpdateColumnNamesInMeta(matPath, colNames)
         % UpdateColumnNamesInMeta 更新 _meta.json 中的列名
         % 输入：matPath 为 _standardized.mat 的完整路径
@@ -388,30 +297,6 @@ classdef DataReaderFactory
                 end
             end
             DataReaderFactory.WriteJson(metaPath, meta);
-        end
-
-        function matPath = ImportToStandard(filePath, outputDir, varargin)
-        % ImportToStandard 阶段一：原始文件 → 标准化 .mat + _meta.json
-        %
-        % 可选参数：
-        %   NoCache       - logical 跳过缓存检查
-
-            p = inputParser;
-            addRequired(p, 'filePath', @ischar);
-            addRequired(p, 'outputDir', @ischar);
-            addParameter(p, 'NoCache', false, @islogical);
-            parse(p, filePath, outputDir, varargin{:});
-
-            % 检查缓存
-            if ~p.Results.NoCache && DataReaderFactory.HasValidCache(filePath, outputDir)
-                [~, baseName] = fileparts(filePath);
-                matPath = fullfile(outputDir, [baseName '_standardized.mat']);
-                return;
-            end
-
-            % 调用 ImportFiles
-            results = DataReaderFactory.ImportFiles({filePath}, outputDir);
-            matPath = results(1).matPath;
         end
 
         function dataset = LoadStandard(matPath)
@@ -496,22 +381,14 @@ classdef DataReaderFactory
             end
 
             nCols = size(data, 2);
-            nRows = size(data, 1);
+
+            % 补齐列名到 nCols
+            if length(columnNames) < nCols
+                columnNames(end+1:nCols) = {''};
+            end
 
             % 构建写入矩阵：1行列名 + N行数据
-            allData = cell(nRows + 1, nCols);
-            for c = 1:nCols
-                if ~isempty(columnNames) && c <= length(columnNames)
-                    allData{1, c} = columnNames{c};
-                else
-                    allData{1, c} = '';
-                end
-            end
-            for r = 1:nRows
-                for c = 1:nCols
-                    allData{r+1, c} = data(r, c);
-                end
-            end
+            allData = [columnNames(1:nCols); num2cell(data)];
 
             if exist('writecell', 'file')
                 writecell(allData, xlsxPath);
@@ -1033,75 +910,14 @@ classdef DataReaderFactory
             end
         end
 
-        function valid = HasValidCache(filePath, outputDir)
-        % HasValidCache 检查是否有有效缓存
-        %
-        % 有效条件：
-        %   1. 标准化.mat 存在
-        %   2. 同名_meta.json 存在
-        %   3. .mat 修改时间 >= 原始文件修改时间
-
-            [~, baseName] = fileparts(filePath);
-            matPath = fullfile(outputDir, [baseName '_standardized.mat']);
-            jsonPath = fullfile(outputDir, [baseName '_standardized_meta.json']);
-
-            valid = false;
-            if ~exist(matPath, 'file')
-                return;
-            end
-            if ~exist(jsonPath, 'file')
-                return;
-            end
-
-            % 检查时间戳
-            matInfo = dir(matPath);
-            srcInfo = dir(filePath);
-            if isempty(matInfo) || isempty(srcInfo)
-                return;
-            end
-
-            valid = matInfo.datenum >= srcInfo.datenum;
-        end
-
-        function files = ListStandardFiles(directory)
-        % ListStandardFiles 列出目录下所有标准化.mat文件
-            listing = dir(fullfile(directory, '*_standardized.mat'));
-            files = cell(1, length(listing));
-            for i = 1:length(listing)
-                files{i} = fullfile(directory, listing(i).name);
-            end
-        end
-
         function UpdateSampleRateInMat(matPath, sampleRate)
         % UpdateSampleRateInMat 更新 _meta.json 中的采样率
-        %
-        % 用于用户在 UI 界面设置采样率后，回写到 JSON 文件
-
-            [outDir, baseName] = fileparts(matPath);
-            jsonPath = fullfile(outDir, [baseName '_meta.json']);
-            if exist(jsonPath, 'file')
-                try
-                    meta = jsondecode(fileread(jsonPath));
-                    meta.sample_rate = sampleRate;
-                    DataReaderFactory.WriteJson(jsonPath, meta);
-                catch
-                end
-            end
+            DataReaderFactory.UpdateMetaField(matPath, 'sample_rate', sampleRate);
         end
 
         function UpdateDatasetNameInMat(matPath, newName)
         % UpdateDatasetNameInMat 更新 _meta.json 中的 dataset_name
-
-            [outDir, baseName] = fileparts(matPath);
-            jsonPath = fullfile(outDir, [baseName '_meta.json']);
-            if exist(jsonPath, 'file')
-                try
-                    meta = jsondecode(fileread(jsonPath));
-                    meta.dataset_name = newName;
-                    DataReaderFactory.WriteJson(jsonPath, meta);
-                catch
-                end
-            end
+            DataReaderFactory.UpdateMetaField(matPath, 'dataset_name', newName);
         end
 
         function name = LoadDatasetName(matPath)
@@ -1119,54 +935,23 @@ classdef DataReaderFactory
             catch
             end
         end
-
-        function UpdateColumnNamesInMat(matPath, newNames)
-        % UpdateColumnNamesInMat 更新 _meta.json 中的列名
-
-            DataReaderFactory.UpdateColumnNamesInMeta(matPath, newNames);
-        end
-
-        function SaveMetadata(matPath, sampleRate, units, descriptions)
-        % SaveMetadata 保存元数据到 _meta.json
-        %
-        % 用于 UI 界面编辑元数据后调用（只更新 JSON，不重写 .mat）
-        %
-        % 输入：
-        %   matPath      - .mat 文件路径
-        %   sampleRate   - 采样率（可为空）
-        %   units        - cell {1×M} 单位
-        %   descriptions - cell {1×M} 描述
-
-            [~, baseName] = fileparts(matPath);
-            jsonPath = fullfile(fileparts(matPath), [baseName '_meta.json']);
-
-            meta = struct();
-            if exist(jsonPath, 'file')
-                try
-                    meta = jsondecode(fileread(jsonPath));
-                catch
-                end
-            end
-
-            meta.sample_rate = sampleRate;
-
-            % 更新 columns 数组的 unit/description
-            if isfield(meta, 'columns') && isstruct(meta.columns)
-                for c = 1:numel(meta.columns)
-                    if ~isempty(units) && c <= length(units)
-                        meta.columns(c).unit = units{c};
-                    end
-                    if ~isempty(descriptions) && c <= length(descriptions)
-                        meta.columns(c).description = descriptions{c};
-                    end
-                end
-            end
-
-            DataReaderFactory.WriteJson(jsonPath, meta);
-        end
     end
 
     methods (Static, Access = private)
+        function UpdateMetaField(matPath, fieldName, value)
+        % UpdateMetaField 通用：读 _meta.json → 改指定字段 → 写回
+            [outDir, baseName] = fileparts(matPath);
+            jsonPath = fullfile(outDir, [baseName '_meta.json']);
+            if exist(jsonPath, 'file')
+                try
+                    meta = jsondecode(fileread(jsonPath));
+                    meta.(fieldName) = value;
+                    DataReaderFactory.WriteJson(jsonPath, meta);
+                catch
+                end
+            end
+        end
+
         function [merged, colNames] = MergeParsed(parsed)
         % MergeParsed 合并多个单通道矩阵为多通道矩阵
         % 单通道文件不需要 time/index 检测，直接取 rawNames 第一个非空名称

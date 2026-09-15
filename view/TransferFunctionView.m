@@ -107,15 +107,15 @@ classdef TransferFunctionView < handle
         end
 
         function ShowLoading(obj, msg)
-            if nargin < 2
-                msg = '处理中...';
-            end
+        % ShowLoading 显示阻断式加载弹窗
+            if nargin < 2, msg = '处理中...'; end
             obj.LoadingDlg_ = uiprogressdlg(ancestor(obj.Grid_, 'figure'), ...
                 'Title', '请稍候', 'Message', msg, 'Indeterminate', 'on');
             drawnow;
         end
 
         function CloseLoading(obj)
+        % CloseLoading 关闭加载弹窗
             if ~isempty(obj.LoadingDlg_) && isvalid(obj.LoadingDlg_)
                 close(obj.LoadingDlg_);
             end
@@ -123,7 +123,7 @@ classdef TransferFunctionView < handle
         end
 
         function ShowError(obj, msg)
-            uialert(ancestor(obj.Grid_, 'figure'), msg, '错误', 'Icon', 'error');
+            ViewUtils.ShowError(obj, msg);
         end
     end
 
@@ -198,33 +198,12 @@ classdef TransferFunctionView < handle
 
         function CleanupBrokenLegends(obj)
         % CleanupBrokenLegends 删除空条目 legend（隐藏页签内创建产生的工件）
-            fig = ancestor(obj.Grid_, 'figure');
-            legs = findobj(fig, 'Type', 'legend');
-            for i = 1:numel(legs)
-                if isempty(legs(i).PlotChildren)
-                    delete(legs(i));
-                end
-            end
+            ViewUtils.CleanupBrokenLegends(ancestor(obj.Grid_, 'figure'));
         end
 
         function RefreshLegendFor(obj, ax)
         % RefreshLegendFor 为指定 uiaxes 重建 legend（若无 legend 且 ≥2 条线）
-            fig = ancestor(obj.Grid_, 'figure');
-            legs = findobj(fig, 'Type', 'legend');
-            hasLegend = false;
-            for i = 1:numel(legs)
-                kids = legs(i).PlotChildren;
-                if ~isempty(kids) && any(arrayfun(@(k) isequal(ancestor(k, 'axes'), ax), kids))
-                    hasLegend = true;
-                end
-            end
-            if hasLegend
-                return;
-            end
-            lines = findobj(ax, 'Type', 'line');
-            if numel(lines) >= 2
-                legend(ax, 'Interpreter', 'none', 'Location', 'northwest');
-            end
+            ViewUtils.RefreshLegendFor(ax, ancestor(obj.Grid_, 'figure'));
         end
     end
 end

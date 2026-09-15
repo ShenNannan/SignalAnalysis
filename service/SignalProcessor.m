@@ -55,5 +55,25 @@ classdef SignalProcessor
             P1(2:end-1) = 2 * P1(2:end-1);
             f = sampleRate * (0:floor(N/2)) / N;
         end
+
+        function [f, d] = SkipZeroFreq(freq, data)
+        % SkipZeroFreq 跳过零频分量（若存在）
+        %
+        % 输入：
+        %   freq - [K×1] 频率轴
+        %   data - [K×1] 对应数据（幅值或累积RMS）
+        %
+        % 输出：
+        %   f - 去掉零频后的频率轴
+        %   d - 去掉零频后的数据
+
+            if abs(freq(1)) < eps
+                f = freq(2:end);
+                d = data(2:end);
+            else
+                f = freq;
+                d = data;
+            end
+        end
     end
 end

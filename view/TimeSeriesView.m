@@ -42,9 +42,7 @@ classdef TimeSeriesView < handle
         ImportButtonClicked
         ClearAllClicked
         ChannelCheckChanged     % 载荷 struct('datasetIdx',..,'colIdx',..,'checked',..)；colIdx=0 表示整个数据集
-        AxesAddClicked
         AxesRemoveClicked
-        LayoutChanged           % 载荷 struct('mode',..)
         ExportClicked
         ExportExcelClicked      % 载荷 struct('datasetIdx',..)
         SetSampleRateClicked    % 载荷 struct('datasetIdx',..)
@@ -54,7 +52,6 @@ classdef TimeSeriesView < handle
         NormClicked             % 载荷 struct('mode',..)
         CalcClicked
         AxesClicked             % 载荷 struct('axesIdx',..,'x',..,'y',..)
-        RenameChannelClicked    % 载荷 struct('datasetIdx',..,'colIdx',..)
         InlineRenameChannel     % 载荷 struct('datasetIdx',..,'colIdx',..,'newName',..)
         InlineRenameDataset     % 载荷 struct('datasetIdx',..,'newName',..)
 
@@ -148,10 +145,6 @@ classdef TimeSeriesView < handle
             obj.Rebuilding_ = false;
         end
 
-        function rows = GetChannelRows(obj)
-            rows = obj.ChannelRows_;
-        end
-
         % ---- axes 管理 ----
 
         function count = GetAxesCount(obj)
@@ -189,7 +182,6 @@ classdef TimeSeriesView < handle
                 ax.YAxis(2).Visible = 'off';
                 yyaxis(ax, 'left');
                 cla(ax);
-                obj.RebuildCursorObjects(ax, axesIdx);
             end
         end
 
@@ -232,9 +224,6 @@ classdef TimeSeriesView < handle
             ax.LineStyleOrder = '-';
             ax.LineStyleOrderIndex = 1;
             ax.ColorOrderIndex = 1;
-
-            % 重建游标线和锚点标记
-            obj.RebuildCursorObjects(ax, axesIdx);
 
             if hasRightY
                 % ---- 双Y模式：用 yyaxis ----
@@ -292,6 +281,9 @@ classdef TimeSeriesView < handle
             elseif numel(allLines) == 1
                 legend(ax, 'off');
             end
+
+            % 重建游标（必须在所有 cla/plot 完成之后）
+            obj.RebuildCursorObjects(ax, axesIdx);
         end
 
         function RefreshLegends(obj)
@@ -319,15 +311,15 @@ classdef TimeSeriesView < handle
         end
 
         function ShowLoading(obj, msg)
-            if nargin < 2
-                msg = '处理中...';
-            end
+        % ShowLoading 显示阻断式加载弹窗
+            if nargin < 2, msg = '处理中...'; end
             obj.LoadingDlg_ = uiprogressdlg(ancestor(obj.Grid_, 'figure'), ...
                 'Title', '请稍候', 'Message', msg, 'Indeterminate', 'on');
             drawnow;
         end
 
         function CloseLoading(obj)
+        % CloseLoading 关闭加载弹窗
             if ~isempty(obj.LoadingDlg_) && isvalid(obj.LoadingDlg_)
                 close(obj.LoadingDlg_);
             end
@@ -335,7 +327,7 @@ classdef TimeSeriesView < handle
         end
 
         function ShowError(obj, msg)
-            uialert(ancestor(obj.Grid_, 'figure'), msg, '错误', 'Icon', 'error');
+            ViewUtils.ShowError(obj, msg);
         end
 
         function ShowInfo(obj, msg)
@@ -392,9 +384,7 @@ classdef TimeSeriesView < handle
         function UpdateCursorMarkers(obj, markerData)
         % UpdateCursorMarkers 更新交点吸附 Marker + 悬浮文本
         % markerData: struct array with fields: axIdx, x, y, hoverText
-            if isempty(obj.CursorMgr_) || ~isfield(obj.CursorMgr_, 'Markers')
-                return;
-            end
+            if isempty(obj.CursorMgr_) || ~isfield(obj.CursorMgr_, 'Markers'), return; end
             markers = obj.CursorMgr_.Markers;
             hoverTexts = obj.CursorMgr_.HoverTexts;
             % 先隐藏所有
@@ -408,11 +398,13 @@ classdef TimeSeriesView < handle
                 axIdx = md.axIdx;
                 if axIdx < 1 || axIdx > numel(markers), continue; end
                 if isnan(md.y), continue; end
+                if ~isgraphics(markers{axIdx}), continue; end
                 set(markers{axIdx}, 'XData', md.x, 'YData', md.y, 'Visible', 'on');
                 xl = xlim(obj.AxesHandles_{axIdx});
                 yl = ylim(obj.AxesHandles_{axIdx});
                 xOffset = 0.015 * (xl(2) - xl(1));
                 yOffset = 0.015 * (yl(2) - yl(1));
+                if ~isgraphics(hoverTexts{axIdx}), continue; end
                 set(hoverTexts{axIdx}, 'Position', [md.x + xOffset, md.y + yOffset], ...
                     'String', md.hoverText, 'Visible', 'on');
             end
@@ -462,7 +454,8 @@ classdef TimeSeriesView < handle
             obj.ChannelTable = uitable(left, ...
                 'ColumnName', {'选择', '数据集'}, ...
                 'ColumnEditable', [true false], ...
-                'ColumnWidth', {38, '1x'});
+                'ColumnWidth', {38, '1x'}, ...
+                'SelectionHighlight', 'on');
             obj.ChannelTable.Layout.Row = 1;
             obj.ChannelTable.Data = table(false(0, 1), cell(0, 1), ...
                 'VariableNames', {'选择', '数据集'});
@@ -570,7 +563,6 @@ classdef TimeSeriesView < handle
                 return;
             end
             obj.AddAxesInternal();
-            notify(obj, 'AxesAddClicked');
         end
 
         function AddAxesInternal(obj)
@@ -653,7 +645,6 @@ classdef TimeSeriesView < handle
                 return;
             end
             obj.SetLayout(mode);
-            notify(obj, 'LayoutChanged', AppEventData(struct('mode', mode)));
         end
 
         function RelayoutGrid(obj)
@@ -825,7 +816,11 @@ classdef TimeSeriesView < handle
             if obj.Highlighting_ || obj.Rebuilding_
                 return;
             end
-            % 重命名期间点击其他行 → 取消重命名
+            % 确保选中行有视觉高亮
+            if ~isempty(e.Indices)
+                obj.ChannelTable.Selection = [e.Indices(1), 1; e.Indices(1), 2];
+            end
+            % 重命名期间点击其他行 → 结束重命名（CellEditCallback 会处理）
             if obj.Renaming_
                 obj.Renaming_ = false;
                 obj.ChannelTable.ColumnEditable(2) = false;
@@ -896,20 +891,21 @@ classdef TimeSeriesView < handle
             obj.SetMenuEnable(obj.MenuClearXAxis_, isChannel && isXChannel);
             obj.SetMenuEnable(obj.MenuSetRightY_, isChannel && ~isRightY && ~isXChannel);
             obj.SetMenuEnable(obj.MenuClearRightY_, isChannel && isRightY);
-            % 父行禁用：采样频率、切片范围、切片重置
+            % 采样频率：仅数据集行可用；切片：仅通道行可用
             cm = obj.ChannelTable.ContextMenu;
             for mi = 1:numel(cm.Children)
                 item = cm.Children(mi);
-                if strcmp(item.Text, '设置采样频率...') || ...
-                   strcmp(item.Text, '设置切片范围...') || ...
-                   strcmp(item.Text, '切片重置')
+                if strcmp(item.Text, '设置采样频率...')
+                    obj.SetMenuEnable(item, ~isChannel);
+                elseif strcmp(item.Text, '设置切片范围...') || ...
+                       strcmp(item.Text, '切片重置')
                     obj.SetMenuEnable(item, isChannel);
                 end
             end
         end
 
         function OnContextRename(obj)
-        % OnContextRename 右键重命名：临时开启列编辑，禁用展开/折叠
+        % OnContextRename 右键重命名：选中名称列，用户单击即可编辑
             sel = obj.ChannelTable.Selection;
             if isempty(sel) || isempty(obj.VisibleRowMap_)
                 return;
@@ -923,9 +919,6 @@ classdef TimeSeriesView < handle
             obj.RenameOriginal_ = r.label;
             obj.Renaming_ = true;
             obj.ChannelTable.ColumnEditable(2) = true;
-            obj.ChannelTable.Selection = [visRow, 2];
-            % 需要两次设置才能进入编辑模式：先选中再更新
-            drawnow;
             obj.ChannelTable.Selection = [visRow, 2];
         end
 
@@ -955,7 +948,11 @@ classdef TimeSeriesView < handle
             end
             internalIdx = obj.VisibleRowMap_(visRow);
             r = obj.ChannelRows_(internalIdx);
+            % 采样频率：数据集级别操作
             if r.isParent
+                if strcmp(action, 'setSampleRate')
+                    notify(obj, 'SetSampleRateClicked', AppEventData(struct('datasetIdx', r.datasetIdx)));
+                end
                 return;
             end
             payload = AppEventData(struct('datasetIdx', r.datasetIdx, 'colIdx', r.colIdx));
@@ -1002,41 +999,62 @@ classdef TimeSeriesView < handle
 
         function CleanupBrokenLegends(obj)
         % CleanupBrokenLegends 删除空条目 legend（隐藏页签内创建产生的工件）
-            fig = ancestor(obj.Grid_, 'figure');
-            legs = findobj(fig, 'Type', 'legend');
-            for i = 1:numel(legs)
-                if isempty(legs(i).PlotChildren)
-                    delete(legs(i));
-                end
-            end
+            ViewUtils.CleanupBrokenLegends(ancestor(obj.Grid_, 'figure'));
         end
 
         function RebuildCursorObjects(obj, ax, axesIdx)
         % RebuildCursorObjects 在 axes 上重建游标线、吸附 Marker 和悬浮文本
         %   cla / cla('reset') 会删除这些对象，调用此方法统一重建
-            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines') ...
-                    && axesIdx <= numel(obj.CursorMgr_.Lines)
-                obj.CursorMgr_.Lines{axesIdx} = xline(ax, 0, ...
-                    'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
-                    'LineStyle', '-', 'HitTest', 'off', ...
-                    'PickableParts', 'none', 'Visible', 'off');
+            if isempty(obj.CursorMgr_)
+                return;
             end
-            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Markers') ...
-                    && axesIdx <= numel(obj.CursorMgr_.Markers)
-                obj.CursorMgr_.Markers{axesIdx} = line(ax, NaN, NaN, ...
-                    'Marker', 'o', 'MarkerSize', 6, ...
-                    'MarkerFaceColor', [0.85 0.32 0.09], ...
-                    'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
-                    'HitTest', 'off', 'PickableParts', 'none', ...
-                    'Tag', 'cursor', 'Visible', 'off');
+            % 确保字段存在
+            if ~isfield(obj.CursorMgr_, 'Lines')
+                obj.CursorMgr_.Lines = {};
             end
-            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'HoverTexts') ...
-                    && axesIdx <= numel(obj.CursorMgr_.HoverTexts)
-                obj.CursorMgr_.HoverTexts{axesIdx} = text(ax, 0, 0, '', ...
-                    'BackgroundColor', [1 1 1 0.85], 'EdgeColor', [0.5 0.5 0.5], ...
-                    'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
-                    'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
-                    'Interpreter', 'none', 'Visible', 'off');
+            if ~isfield(obj.CursorMgr_, 'Markers')
+                obj.CursorMgr_.Markers = {};
+            end
+            if ~isfield(obj.CursorMgr_, 'HoverTexts')
+                obj.CursorMgr_.HoverTexts = {};
+            end
+            % 确保数组足够大
+            while numel(obj.CursorMgr_.Lines) < axesIdx
+                obj.CursorMgr_.Lines{end+1} = [];
+            end
+            while numel(obj.CursorMgr_.Markers) < axesIdx
+                obj.CursorMgr_.Markers{end+1} = [];
+            end
+            while numel(obj.CursorMgr_.HoverTexts) < axesIdx
+                obj.CursorMgr_.HoverTexts{end+1} = [];
+            end
+            % 重建游标线
+            h1 = xline(ax, 0, ...
+                'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
+                'LineStyle', '-', 'HitTest', 'off', ...
+                'PickableParts', 'none', 'Visible', 'off', ...
+                'HandleVisibility', 'off');
+            obj.CursorMgr_.Lines{axesIdx} = h1;
+            % 重建吸附 Marker
+            h2 = line(ax, NaN, NaN, ...
+                'Marker', 'o', 'MarkerSize', 6, ...
+                'MarkerFaceColor', [0.85 0.32 0.09], ...
+                'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
+                'HitTest', 'off', 'PickableParts', 'none', ...
+                'Tag', 'cursor', 'Visible', 'off', ...
+                'HandleVisibility', 'off');
+            obj.CursorMgr_.Markers{axesIdx} = h2;
+            % 重建悬浮文本
+            h3 = text(ax, 0, 0, '', ...
+                'BackgroundColor', [1 1 1 0.85], 'EdgeColor', [0.5 0.5 0.5], ...
+                'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
+                'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
+                'Interpreter', 'none', 'Visible', 'off', ...
+                'HandleVisibility', 'off');
+            obj.CursorMgr_.HoverTexts{axesIdx} = h3;
+            % 验证创建成功
+            if ~isgraphics(h1) || ~isgraphics(h2) || ~isgraphics(h3)
+                warning('RebuildCursorObjects: failed to create cursor objects');
             end
         end
 
@@ -1053,22 +1071,7 @@ classdef TimeSeriesView < handle
 
         function RefreshLegendFor(obj, ax)
         % RefreshLegendFor 为指定 uiaxes 重建 legend（若无 legend 且 ≥2 条线）
-            fig = ancestor(obj.Grid_, 'figure');
-            legs = findobj(fig, 'Type', 'legend');
-            hasLegend = false;
-            for i = 1:numel(legs)
-                kids = legs(i).PlotChildren;
-                if ~isempty(kids) && any(arrayfun(@(k) isequal(ancestor(k, 'axes'), ax), kids))
-                    hasLegend = true;
-                end
-            end
-            if hasLegend
-                return;
-            end
-            lines = findobj(ax, 'Type', 'line');
-            if numel(lines) >= 2
-                legend(ax, 'Interpreter', 'none', 'Location', 'northwest');
-            end
+            ViewUtils.RefreshLegendFor(ax, ancestor(obj.Grid_, 'figure'));
         end
     end
 
@@ -1157,7 +1160,7 @@ classdef TimeSeriesView < handle
         end
 
         function result = ShowSampleRateDialog(~, dsName, defaultVal)
-        % ShowSampleRateDialog 弹窗输入采样率
+        % ShowSampleRateDialog 弹窗输入采样率（uifigure + uigridlayout）
         %
         % 输入：
         %   dsName     - 数据集名称
@@ -1168,84 +1171,83 @@ classdef TimeSeriesView < handle
 
             if nargin < 3, defaultVal = ''; end
             result = [];
-            dlg = dialog('Name', '设置采样率', 'Position', [400 350 340 160], ...
-                'WindowStyle', 'modal', 'Resize', 'off');
-            uicontrol('Parent', dlg, 'Style', 'text', ...
-                'String', sprintf('数据集: %s', dsName), ...
-                'FontSize', 10, ...
-                'Position', [14 120 312 22], 'HorizontalAlignment', 'left');
-            uicontrol('Parent', dlg, 'Style', 'text', ...
-                'String', '采样率 (Hz):', ...
-                'FontSize', 10, ...
-                'Position', [14 86 100 22], 'HorizontalAlignment', 'left');
-            editRate = uicontrol('Parent', dlg, 'Style', 'edit', ...
-                'String', defaultVal, 'FontSize', 10, ...
-                'Position', [120 84 196 26]);
-            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
-                'String', '确定', 'FontSize', 10, ...
-                'Position', [150 14 70 30], ...
-                'Callback', @(~, ~) doOk());
-            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
-                'String', '取消', 'FontSize', 10, ...
-                'Position', [240 14 70 30], ...
-                'Callback', @(~, ~) delete(dlg));
-            uiwait(dlg);
+            if isnumeric(defaultVal), defaultVal = num2str(defaultVal); end
+            fig = uifigure('Name', '设置采样率', 'WindowStyle', 'modal', ...
+                'Position', [400 350 340 160], 'Resize', 'off');
+            g = uigridlayout(fig, [4 2], ...
+                'RowHeight', {22, 28, 28, 30}, ...
+                'ColumnWidth', {100, '1x'}, ...
+                'Padding', [14 14 14 14], 'RowSpacing', 6);
+            lbl1 = uilabel(g, 'Text', sprintf('数据集: %s', dsName));
+            lbl1.Layout.Row = 1;  lbl1.Layout.Column = [1 2];
+            lbl2 = uilabel(g, 'Text', '采样率 (Hz):');
+            lbl2.Layout.Row = 2;  lbl2.Layout.Column = 1;
+            editRate = uieditfield(g, 'numeric', 'Value', str2double(defaultVal), ...
+                'Limits', [0 Inf]);
+            editRate.Layout.Row = 2;  editRate.Layout.Column = 2;
+            btnGrid = uigridlayout(g, [1 2], 'ColumnWidth', {'1x', '1x'}, ...
+                'Padding', [0 0 0 0]);
+            btnGrid.Layout.Row = 4;
+            btnGrid.Layout.Column = [1 2];
+            uibutton(btnGrid, 'push', 'Text', '确定', ...
+                'ButtonPushedFcn', @(~, ~) doOk());
+            uibutton(btnGrid, 'push', 'Text', '取消', ...
+                'ButtonPushedFcn', @(~, ~) delete(fig));
+            uiwait(fig);
             function doOk()
-                v = str2double(get(editRate, 'String'));
+                v = editRate.Value;
                 if ~isnan(v) && v > 0
                     result = v;
-                    uiresume(dlg); delete(dlg);
+                    delete(fig);
                 else
-                    errordlg('采样率必须为正数', '输入错误', 'modal');
+                    uialert(fig, '采样率必须为正数', '输入错误');
                 end
             end
         end
 
         function result = ShowSliceRangeDialog(~, colName, totalRows, defaultStart, defaultLen)
-        % ShowSliceRangeDialog 弹窗输入切片范围
+        % ShowSliceRangeDialog 弹窗输入切片范围（uifigure + uigridlayout）
         %
         % 输出：
         %   result - [start, len] 或 []
 
             result = [];
-            dlg = dialog('Name', sprintf('切片范围 - %s', colName), ...
-                'Position', [400 350 340 200], ...
-                'WindowStyle', 'modal', 'Resize', 'off');
-            uicontrol('Parent', dlg, 'Style', 'text', ...
-                'String', sprintf('共 %d 行', totalRows), ...
-                'FontSize', 10, ...
-                'Position', [14 162 312 22], 'HorizontalAlignment', 'left');
-            uicontrol('Parent', dlg, 'Style', 'text', ...
-                'String', '起点行号:', ...
-                'FontSize', 10, ...
-                'Position', [14 128 100 22], 'HorizontalAlignment', 'left');
-            editStart = uicontrol('Parent', dlg, 'Style', 'edit', ...
-                'String', num2str(defaultStart), 'FontSize', 10, ...
-                'Position', [120 126 196 26]);
-            uicontrol('Parent', dlg, 'Style', 'text', ...
-                'String', '长度:', ...
-                'FontSize', 10, ...
-                'Position', [14 92 100 22], 'HorizontalAlignment', 'left');
-            editLen = uicontrol('Parent', dlg, 'Style', 'edit', ...
-                'String', num2str(defaultLen), 'FontSize', 10, ...
-                'Position', [120 90 196 26]);
-            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
-                'String', '确定', 'FontSize', 10, ...
-                'Position', [150 14 70 30], ...
-                'Callback', @(~, ~) doOk());
-            uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
-                'String', '取消', 'FontSize', 10, ...
-                'Position', [240 14 70 30], ...
-                'Callback', @(~, ~) delete(dlg));
-            uiwait(dlg);
+            fig = uifigure('Name', sprintf('切片范围 - %s', colName), ...
+                'WindowStyle', 'modal', 'Position', [400 350 340 200], ...
+                'Resize', 'off');
+            g = uigridlayout(fig, [5 2], ...
+                'RowHeight', {22, 28, 28, 28, 30}, ...
+                'ColumnWidth', {100, '1x'}, ...
+                'Padding', [14 14 14 14], 'RowSpacing', 6);
+            lbl = uilabel(g, 'Text', sprintf('共 %d 行', totalRows));
+            lbl.Layout.Row = 1;  lbl.Layout.Column = [1 2];
+            lbl2 = uilabel(g, 'Text', '起点行号:');
+            lbl2.Layout.Row = 2;  lbl2.Layout.Column = 1;
+            editStart = uieditfield(g, 'numeric', 'Value', defaultStart, ...
+                'Limits', [1 Inf]);
+            editStart.Layout.Row = 2;  editStart.Layout.Column = 2;
+            lbl3 = uilabel(g, 'Text', '长度:');
+            lbl3.Layout.Row = 3;  lbl3.Layout.Column = 1;
+            editLen = uieditfield(g, 'numeric', 'Value', defaultLen, ...
+                'Limits', [1 Inf]);
+            editLen.Layout.Row = 3;  editLen.Layout.Column = 2;
+            btnGrid = uigridlayout(g, [1 2], 'ColumnWidth', {'1x', '1x'}, ...
+                'Padding', [0 0 0 0]);
+            btnGrid.Layout.Row = 5;
+            btnGrid.Layout.Column = [1 2];
+            uibutton(btnGrid, 'push', 'Text', '确定', ...
+                'ButtonPushedFcn', @(~, ~) doOk());
+            uibutton(btnGrid, 'push', 'Text', '取消', ...
+                'ButtonPushedFcn', @(~, ~) delete(fig));
+            uiwait(fig);
             function doOk()
-                s = round(str2double(get(editStart, 'String')));
-                l = round(str2double(get(editLen, 'String')));
+                s = round(editStart.Value);
+                l = round(editLen.Value);
                 if ~isnan(s) && ~isnan(l) && s >= 1 && l >= 1
                     result = [s, l];
-                    uiresume(dlg); delete(dlg);
+                    delete(fig);
                 else
-                    errordlg('起点 ≥1, 长度 ≥1', '输入错误', 'modal');
+                    uialert(fig, '起点 ≥1, 长度 ≥1', '输入错误');
                 end
             end
         end
@@ -1271,6 +1273,7 @@ classdef TimeSeriesView < handle
         function onCursorMotion(obj)
         % onCursorMotion 全局鼠标移动：边界保护 + drawnow limitrate 节流
             if isempty(obj.CursorMgr_), return; end
+            if ~isfield(obj.CursorMgr_, 'Lines') || isempty(obj.CursorMgr_.Lines), return; end
 
             for i = 1:obj.AxesCount_
                 ax = obj.AxesHandles_{i};

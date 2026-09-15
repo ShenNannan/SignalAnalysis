@@ -204,6 +204,42 @@ classdef ChannelOperations
                 end
             end
         end
+
+        function [activeIdx, snapY] = SnapToNearestChannel(yVals, mouseY, yLimLeft, yLimRight, isRightYMask)
+        % SnapToNearestChannel 归一化坐标吸附到最近通道
+        %
+        % 输入：
+        %   yVals        - 1×N 各通道 Y 值（NaN 表示无效）
+        %   mouseY       - 鼠标 Y 坐标（物理坐标）
+        %   yLimLeft     - 左 Y 轴 [min, max]
+        %   yLimRight    - 右 Y 轴 [min, max]
+        %   isRightYMask - 1×N logical，true 表示该通道在右 Y 轴
+        %
+        % 输出：
+        %   activeIdx - 最近通道索引（无有效通道时返回 0）
+        %   snapY     - 吸附后的 Y 值
+
+            validMask = ~isnan(yVals);
+            if ~any(validMask)
+                activeIdx = 0;
+                snapY = NaN;
+                return;
+            end
+            mouseNorm = (mouseY - yLimLeft(1)) / (yLimLeft(2) - yLimLeft(1));
+            dists = nan(1, length(yVals));
+            for vi = find(validMask)
+                if isRightYMask(vi)
+                    valNorm = (yVals(vi) - yLimRight(1)) / (yLimRight(2) - yLimRight(1));
+                else
+                    valNorm = (yVals(vi) - yLimLeft(1)) / (yLimLeft(2) - yLimLeft(1));
+                end
+                dists(vi) = abs(valNorm - mouseNorm);
+            end
+            [~, nearestK] = min(dists(validMask));
+            validIdx = find(validMask);
+            activeIdx = validIdx(nearestK);
+            snapY = yVals(activeIdx);
+        end
     end
 
     methods (Static, Access = private)

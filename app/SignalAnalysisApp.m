@@ -69,13 +69,6 @@ classdef SignalAnalysisApp < handle
             obj.StatusBar.Text = txt;
         end
 
-        function SetTimeSeriesPresenter(obj, presenter)
-            obj.TimeSeriesPresenter_ = presenter;
-        end
-
-        function SetTransferFunctionPresenter(obj, presenter)
-            obj.TransferFunctionPresenter_ = presenter;
-        end
     end
 
     methods (Static, Access = private)
