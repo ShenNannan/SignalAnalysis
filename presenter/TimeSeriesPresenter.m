@@ -1295,9 +1295,33 @@ classdef TimeSeriesPresenter < BasePresenter
                     labels{k} = chans{k}.Label;
                 end
                 % 智能吸附：找离 mouseY 最近的有效通道
+                % 双Y轴时左右坐标系不同，统一归一化到 axes 0-1 再比较
                 validMask = ~isnan(yVals);
                 if any(validMask)
-                    [~, nearestK] = min(abs(yVals(validMask) - d.mouseY));
+                    ax = obj.View.GetAxes(gAx);
+                    yyaxis(ax, 'left'); ylL = get(ax, 'YLim');
+                    yyaxis(ax, 'right'); ylR = get(ax, 'YLim');
+                    yyaxis(ax, 'left');
+                    mouseNorm = (d.mouseY - ylL(1)) / (ylL(2) - ylL(1));
+                    dists = nan(1, length(yVals));
+                    rightYRefs = obj.Session.GetRightYChannel(gAx);
+                    for vi = find(validMask)
+                        isRightY = false;
+                        for ri = 1:length(rightYRefs)
+                            if rightYRefs{ri}.DatasetIdx == chans{vi}.DatasetIdx && ...
+                               rightYRefs{ri}.ColIdx == chans{vi}.ColIdx
+                                isRightY = true;
+                                break;
+                            end
+                        end
+                        if isRightY
+                            valNorm = (yVals(vi) - ylR(1)) / (ylR(2) - ylR(1));
+                        else
+                            valNorm = (yVals(vi) - ylL(1)) / (ylL(2) - ylL(1));
+                        end
+                        dists(vi) = abs(valNorm - mouseNorm);
+                    end
+                    [~, nearestK] = min(dists(validMask));
                     validIdx = find(validMask);
                     activeK = validIdx(nearestK);
                     snapY = yVals(activeK);
