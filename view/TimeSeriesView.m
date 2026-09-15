@@ -1163,7 +1163,7 @@ classdef TimeSeriesView < handle
         end
 
         function result = ShowSampleRateDialog(~, dsName, defaultVal)
-        % ShowSampleRateDialog 弹窗输入采样率（uifigure + Position 定位）
+        % ShowSampleRateDialog 弹窗输入采样率（inputdlg 原生模态）
         %
         % 输入：
         %   dsName     - 数据集名称
@@ -1175,89 +1175,37 @@ classdef TimeSeriesView < handle
             if nargin < 3, defaultVal = ''; end
             result = [];
             if isnumeric(defaultVal), defaultVal = num2str(defaultVal); end
-            figW = 320; figH = 160;
-            ss = get(0, 'ScreenSize');
-            figX = round((ss(3) - figW) / 2);
-            figY = round((ss(4) - figH) / 2);
-            fig = uifigure('Name', '设置采样率', 'Resize', 'off', ...
-                'Position', [figX figY figW figH]);
-            pad = 14; lw = 100; bh = 28;
-            uilabel(fig, 'Text', sprintf('数据集: %s', dsName), ...
-                'Position', [pad, figH-pad-20, figW-2*pad, 20]);
-            uilabel(fig, 'Text', '采样率 (Hz):', ...
-                'Position', [pad, figH-pad-20-6-bh, lw, bh]);
-            editRate = uieditfield(fig, 'text', ...
-                'Value', defaultVal, ...
-                'Position', [pad+lw+6, figH-pad-20-6-bh, figW-2*pad-lw-6, bh]);
-            btnW = 80; btnY = pad;
-            uibutton(fig, 'push', 'Text', '确定', ...
-                'Position', [figW/2-btnW-4, btnY, btnW, bh], ...
-                'ButtonPushedFcn', @(~, ~) doOk());
-            uibutton(fig, 'push', 'Text', '取消', ...
-                'Position', [figW/2+4, btnY, btnW, bh], ...
-                'ButtonPushedFcn', @(~, ~) delete(fig));
-            drawnow;
-            focus(editRate);
-            uiwait(fig);
-            function doOk()
-                v = str2double(editRate.Value);
-                if ~isnan(v) && v > 0
-                    result = v;
-                    delete(fig);
-                else
-                    uialert(fig, '采样率必须为正数', '输入错误');
-                end
+
+            answer = inputdlg({sprintf('采样率 (Hz):', dsName)}, ...
+                '设置采样率', [1 40], {defaultVal});
+            if isempty(answer), return; end
+
+            v = str2double(answer{1});
+            if ~isnan(v) && v > 0
+                result = v;
+            else
+                errordlg('采样率必须为正数', '输入错误');
             end
         end
 
         function result = ShowSliceRangeDialog(~, colName, totalRows, defaultStart, defaultLen)
-        % ShowSliceRangeDialog 弹窗输入切片范围（uifigure + Position 定位）
+        % ShowSliceRangeDialog 弹窗输入切片范围（inputdlg 原生模态）
         %
         % 输出：
         %   result - [start, len] 或 []
 
             result = [];
-            figW = 320; figH = 220;
-            ss = get(0, 'ScreenSize');
-            figX = round((ss(3) - figW) / 2);
-            figY = round((ss(4) - figH) / 2);
-            fig = uifigure('Name', sprintf('切片范围 - %s', colName), ...
-                'Resize', 'off', 'Position', [figX figY figW figH]);
-            pad = 14; lw = 100; bh = 28; gap = 6;
-            row1Y = figH - pad - 20;
-            row2Y = row1Y - gap - bh;
-            row3Y = row2Y - gap - bh;
-            uilabel(fig, 'Text', sprintf('共 %d 行', totalRows), ...
-                'Position', [pad, row1Y, figW-2*pad, 20]);
-            uilabel(fig, 'Text', '起点行号:', ...
-                'Position', [pad, row2Y, lw, bh]);
-            editStart = uieditfield(fig, 'numeric', ...
-                'Value', defaultStart, 'Limits', [1 Inf], ...
-                'Position', [pad+lw+6, row2Y, figW-2*pad-lw-6, bh]);
-            uilabel(fig, 'Text', '长度:', ...
-                'Position', [pad, row3Y, lw, bh]);
-            editLen = uieditfield(fig, 'numeric', ...
-                'Value', defaultLen, 'Limits', [1 Inf], ...
-                'Position', [pad+lw+6, row3Y, figW-2*pad-lw-6, bh]);
-            btnW = 80; btnY = pad;
-            uibutton(fig, 'push', 'Text', '确定', ...
-                'Position', [figW/2-btnW-4, btnY, btnW, bh], ...
-                'ButtonPushedFcn', @(~, ~) doOk());
-            uibutton(fig, 'push', 'Text', '取消', ...
-                'Position', [figW/2+4, btnY, btnW, bh], ...
-                'ButtonPushedFcn', @(~, ~) delete(fig));
-            drawnow;
-            focus(editStart);
-            uiwait(fig);
-            function doOk()
-                s = round(editStart.Value);
-                l = round(editLen.Value);
-                if ~isnan(s) && ~isnan(l) && s >= 1 && l >= 1
-                    result = [s, l];
-                    delete(fig);
-                else
-                    uialert(fig, '起点 ≥1, 长度 ≥1', '输入错误');
-                end
+            prompt = {sprintf('共 %d 行，起点行号:', totalRows), '长度:'};
+            answer = inputdlg(prompt, sprintf('切片范围 - %s', colName), ...
+                [1 40], {num2str(defaultStart), num2str(defaultLen)});
+            if isempty(answer), return; end
+
+            s = round(str2double(answer{1}));
+            l = round(str2double(answer{2}));
+            if ~isnan(s) && ~isnan(l) && s >= 1 && l >= 1
+                result = [s, l];
+            else
+                errordlg('起点 ≥1, 长度 ≥1', '输入错误');
             end
         end
 
