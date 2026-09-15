@@ -1157,19 +1157,10 @@ classdef TimeSeriesPresenter < BasePresenter
                 obj.RefreshChannelTable();
             end
 
-            % Datatip：仅在 MATLAB 自带数据提示模式激活时创建
+            % 右键清除当前 axes 的 datatip
             if d.axesIdx >= 1
                 fig = ancestor(obj.View.Grid_, 'figure');
-                clickType = fig.SelectionType;
-                isDatatipMode = false;
-                try
-                    mode = fig.ModeManager.CurrentMode;
-                    isDatatipMode = ~isempty(mode) && contains(mode.Name, 'DataTip', 'IgnoreCase', true);
-                catch
-                end
-                if isDatatipMode && strcmp(clickType, 'normal') && obj.CursorLastIdx_ > 0
-                    obj.CreateDatatip(d.axesIdx, d.x, d.y);
-                elseif strcmp(clickType, 'alt')
+                if strcmp(fig.SelectionType, 'alt')
                     obj.ClearDatatips(d.axesIdx);
                 end
             end

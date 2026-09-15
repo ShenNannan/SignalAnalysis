@@ -283,7 +283,8 @@ classdef TimeSeriesView < handle
                     [~, shortLabel] = strtok(labels{c}, '/');
                     if isempty(shortLabel), displayName = labels{c};
                     else, displayName = strtrim(shortLabel(2:end)); end
-                    h = plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'LineWidth', 1, 'LineStyle', '-', 'DisplayName', displayName, 'Tag', 'leftY', 'HitTest', 'off');
+                    h = plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'LineWidth', 1, 'LineStyle', '-', 'DisplayName', displayName, 'Tag', 'leftY');
+                    h.ButtonDownFcn = @(s, e) obj.OnAxesButtonDown(axesIdx, e);
                     allLines(end+1) = h;
                 end
                 hold(ax, 'off');
@@ -293,7 +294,8 @@ classdef TimeSeriesView < handle
                 for c = 1:numel(rightYData.x)
                     h = plot(ax, rightYData.x{c}, rightYData.y{c}, ...
                         'Color', rightYData.colors{c}, 'LineWidth', 1, 'LineStyle', '--', ...
-                        'DisplayName', rightYData.labels{c}, 'Tag', 'rightY', 'HitTest', 'off');
+                        'DisplayName', rightYData.labels{c}, 'Tag', 'rightY');
+                    h.ButtonDownFcn = @(s, e) obj.OnAxesButtonDown(axesIdx, e);
                     allLines(end+1) = h;
                 end
                 hold(ax, 'off');
@@ -307,7 +309,8 @@ classdef TimeSeriesView < handle
                     [~, shortLabel] = strtok(labels{c}, '/');
                     if isempty(shortLabel), displayName = labels{c};
                     else, displayName = strtrim(shortLabel(2:end)); end
-                    h = plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'LineWidth', 1, 'LineStyle', '-', 'DisplayName', displayName, 'HitTest', 'off');
+                    h = plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'LineWidth', 1, 'LineStyle', '-', 'DisplayName', displayName);
+                    h.ButtonDownFcn = @(s, e) obj.OnAxesButtonDown(axesIdx, e);
                     allLines(end+1) = h;
                 end
                 hold(ax, 'off');
