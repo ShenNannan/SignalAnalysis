@@ -1,5 +1,5 @@
 classdef Dataset < handle
-% Dataset - 统一数据容器
+% Dataset - 统一数据容器（handle + immutable 引用语义）
 %
 % 所有 DataReaderFactory.LoadStandard 输出此类型。
 % 下游代码（Presenter, SignalProcessor）只通过此接口访问数据。
@@ -9,6 +9,10 @@ classdef Dataset < handle
 %   - L1（采样率）有默认值（1Hz），用户可覆盖
 %   - L2（列名）自动生成，用户可覆盖
 %   - Units/Descriptions 私有，通过 GetDisplayLabel 智能组合
+%
+% 注意：handle 类 + SetAccess = immutable = 引用语义但不可原地修改。
+% 需要"修改"属性时（如更新采样率、列名），使用 RebuildWith* 方法
+% 创建新实例，再通过 Session.UpdateDataset 替换。
 
     properties (SetAccess = immutable)
         Values          double   % [N×M] 数值矩阵

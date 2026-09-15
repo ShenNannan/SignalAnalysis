@@ -2,9 +2,13 @@
 %
 % 设置路径并启动统一窗口（时域分析/传函分析页签）。
 % app 句柄保留在 base 工作区，便于命令行调试。
+% 注意：不使用 genpath 以避免将 tests/ 等目录加入路径。
 
 thisDir = fileparts(mfilename('fullpath'));
-addpath(genpath(thisDir));
+dirs = {'', 'app', 'view', 'presenter', 'model', 'service', 'launcher', 'readers', 'tools'};
+for k = 1:numel(dirs)
+    addpath(fullfile(thisDir, dirs{k}));
+end
 rehash;
 
 app = SignalAnalysisApp(); %#ok<NASGU>

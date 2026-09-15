@@ -83,9 +83,11 @@ classdef SignalAnalysisApp < handle
         % SettleUI 泵渲染队列直至 uigridlayout 布局完成
         % 部分会话中 uifigure 布局在事件循环空闲时才惰性处理，
         % 导致窗口已显示而控件仍停留默认位置（按钮"无显示"）。
-            for k = 1:40
+            SETTLE_ITERATIONS = 40;   % 循环次数（经验值）
+            SETTLE_PAUSE_SEC  = 0.025; % 每次暂停秒数
+            for k = 1:SETTLE_ITERATIONS
                 drawnow;
-                pause(0.025);
+                pause(SETTLE_PAUSE_SEC);
             end
         end
     end

@@ -183,32 +183,13 @@ classdef TimeSeriesView < handle
             ax = obj.GetAxes(axesIdx);
             if ~isempty(ax) && isvalid(ax)
                 legend(ax, 'off');
+                % 手动清除两条 Y 轴（不用 cla('reset') 避免重建 axes 结构）
+                yyaxis(ax, 'right');
                 cla(ax);
-                % 重建被 cla 删除的游标线和锚点标记
-                if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines') ...
-                        && axesIdx <= numel(obj.CursorMgr_.Lines)
-                    obj.CursorMgr_.Lines{axesIdx} = xline(ax, 0, ...
-                        'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
-                        'LineStyle', '-', 'HitTest', 'off', ...
-                        'PickableParts', 'none', 'Visible', 'off');
-                end
-                if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Markers') ...
-                        && axesIdx <= numel(obj.CursorMgr_.Markers)
-                    obj.CursorMgr_.Markers{axesIdx} = line(ax, NaN, NaN, ...
-                        'Marker', 'o', 'MarkerSize', 6, ...
-                        'MarkerFaceColor', [0.85 0.32 0.09], ...
-                        'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
-                        'HitTest', 'off', 'PickableParts', 'none', ...
-                        'Tag', 'cursor', 'Visible', 'off');
-                end
-                if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'HoverTexts') ...
-                        && axesIdx <= numel(obj.CursorMgr_.HoverTexts)
-                    obj.CursorMgr_.HoverTexts{axesIdx} = text(ax, 0, 0, '', ...
-                        'BackgroundColor', [1 1 1 0.85], 'EdgeColor', [0.5 0.5 0.5], ...
-                        'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
-                        'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
-                        'Interpreter', 'none', 'Visible', 'off');
-                end
+                ax.YAxis(2).Visible = 'off';
+                yyaxis(ax, 'left');
+                cla(ax);
+                obj.RebuildCursorObjects(ax, axesIdx);
             end
         end
 
@@ -236,11 +217,15 @@ classdef TimeSeriesView < handle
 
             hasRightY = isstruct(rightYData) && isfield(rightYData, 'x') && ~isempty(rightYData.x);
 
-            % 保存交互属性（cla('reset') 会清除它们）
+            % 保存交互属性
             savedButtonDownFcn = ax.ButtonDownFcn;
 
-            % 彻底重置 axes（退出 yyaxis 结构 + 清除所有子对象）
-            cla(ax, 'reset');
+            % 手动清除两条 Y 轴（不用 cla('reset') 避免 R2025b 重建双Y结构）
+            yyaxis(ax, 'right');
+            cla(ax);
+            ax.YAxis(2).Visible = 'off';
+            yyaxis(ax, 'left');
+            cla(ax);
 
             % 恢复交互属性
             ax.ButtonDownFcn = savedButtonDownFcn;
@@ -248,34 +233,12 @@ classdef TimeSeriesView < handle
             ax.LineStyleOrderIndex = 1;
             ax.ColorOrderIndex = 1;
 
-            % 重建被 cla('reset') 删除的游标线和锚点标记
-            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines') ...
-                    && axesIdx <= numel(obj.CursorMgr_.Lines)
-                obj.CursorMgr_.Lines{axesIdx} = xline(ax, 0, ...
-                    'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
-                    'LineStyle', '-', 'HitTest', 'off', ...
-                    'PickableParts', 'none', 'Visible', 'off');
-            end
-            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Markers') ...
-                    && axesIdx <= numel(obj.CursorMgr_.Markers)
-                obj.CursorMgr_.Markers{axesIdx} = line(ax, NaN, NaN, ...
-                    'Marker', 'o', 'MarkerSize', 6, ...
-                    'MarkerFaceColor', [0.85 0.32 0.09], ...
-                    'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
-                    'HitTest', 'off', 'PickableParts', 'none', ...
-                    'Tag', 'cursor', 'Visible', 'off');
-            end
-            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'HoverTexts') ...
-                    && axesIdx <= numel(obj.CursorMgr_.HoverTexts)
-                obj.CursorMgr_.HoverTexts{axesIdx} = text(ax, 0, 0, '', ...
-                    'BackgroundColor', [1 1 1 0.85], 'EdgeColor', [0.5 0.5 0.5], ...
-                    'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
-                    'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
-                    'Interpreter', 'none', 'Visible', 'off');
-            end
+            % 重建游标线和锚点标记
+            obj.RebuildCursorObjects(ax, axesIdx);
 
             if hasRightY
                 % ---- 双Y模式：用 yyaxis ----
+                ax.YAxis(2).Visible = 'on';
                 yyaxis(ax, 'left');
                 hold(ax, 'on');
                 allLines = gobjects(0);
@@ -303,6 +266,12 @@ classdef TimeSeriesView < handle
                 yyaxis(ax, 'left');  % 固定活动侧
             else
                 % ---- 普通模式 ----
+                % 显式隐藏右 Y 轴（避免残留旧的双Y结构）
+                yyaxis(ax, 'right');
+                cla(ax);
+                ax.YAxis(2).Visible = 'off';
+                yyaxis(ax, 'left');
+                cla(ax);
                 hold(ax, 'on');
                 allLines = gobjects(0);
                 for c = 1:numel(yCell)
@@ -610,14 +579,19 @@ classdef TimeSeriesView < handle
             end
             obj.AxesCount_ = obj.AxesCount_ + 1;
             ax = uiaxes(obj.AxesGrid);
+            % 确保只有左 Y 轴（R2025b uiaxes 默认带双Y）
+            yyaxis(ax, 'right');
+            cla(ax);
+            ax.YAxis(2).Visible = 'off';
+            yyaxis(ax, 'left');
+            cla(ax);
             grid(ax, 'on');
             ylabel(ax, 'Amplitude');
             idx = obj.AxesCount_;
             ax.ButtonDownFcn = @(s, e) obj.OnAxesButtonDown(idx, e);
             obj.AxesHandles_{end+1} = ax;
-            % 配置交互：滚轮缩放 + 中键平移 + Shift+左键框选放大
-            disableDefaultInteractions(ax);
-            ax.Interactions = [zoomInteraction, panInteraction, regionZoomInteraction];
+            % 配置交互：滚轮缩放 + 框选放大
+            ax.Interactions = [zoomInteraction, regionZoomInteraction];
             % 为新 axes 添加游标线和锚点标记
             if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines')
                 obj.CursorMgr_.Lines{end+1} = xline(ax, 0, ...
@@ -710,7 +684,9 @@ classdef TimeSeriesView < handle
         end
 
         function LinkXAxes(obj)
-        % LinkXAxes 仅链接使用相同自定义横轴的 axes（默认索引的 axes 不互相链接）
+        % LinkXAxes 按横轴引用分组链接 axes
+        %   相同自定义横轴的 axes 互相链接，默认横轴的 axes 也互相链接
+        %   不同自定义横轴的 axes 互不干扰
             % 先清除所有旧链接
             for i = 1:numel(obj.AxesHandles_)
                 a = obj.AxesHandles_{i};
@@ -735,14 +711,15 @@ classdef TimeSeriesView < handle
             if numel(validHandles) < 2
                 return;
             end
-            % 按自定义X通道分组（默认索引的不参与链接）
+            % 按横轴引用分组：默认横轴归入 '__default__' 组，互相链接
             groups = containers.Map('KeyType', 'char', 'ValueType', 'any');
             for i = 1:numel(validHandles)
                 ref = validXRef{i};
                 if isempty(ref)
-                    continue; % 默认索引，不链接
+                    key = '__default__';
+                else
+                    key = sprintf('%d_%d', ref(1), ref(2));
                 end
-                key = sprintf('%d_%d', ref(1), ref(2));
                 if groups.isKey(key)
                     groups(key) = [groups(key), validHandles(i)];
                 else
@@ -769,11 +746,16 @@ classdef TimeSeriesView < handle
             end
             x = NaN;
             y = NaN;
+            selType = 'normal';
+            if ~isempty(fig)
+                selType = fig.SelectionType;
+            end
             if ~isempty(e) && isprop(e, 'IntersectionPoint')
                 x = e.IntersectionPoint(1);
                 y = e.IntersectionPoint(2);
             end
-            notify(obj, 'AxesClicked', AppEventData(struct('axesIdx', axesIdx, 'x', x, 'y', y)));
+            notify(obj, 'AxesClicked', AppEventData(struct(...
+                'axesIdx', axesIdx, 'x', x, 'y', y, 'selectionType', selType)));
         end
 
         function UpdateAxesHighlight(obj)
@@ -1029,6 +1011,35 @@ classdef TimeSeriesView < handle
             end
         end
 
+        function RebuildCursorObjects(obj, ax, axesIdx)
+        % RebuildCursorObjects 在 axes 上重建游标线、吸附 Marker 和悬浮文本
+        %   cla / cla('reset') 会删除这些对象，调用此方法统一重建
+            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines') ...
+                    && axesIdx <= numel(obj.CursorMgr_.Lines)
+                obj.CursorMgr_.Lines{axesIdx} = xline(ax, 0, ...
+                    'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
+                    'LineStyle', '-', 'HitTest', 'off', ...
+                    'PickableParts', 'none', 'Visible', 'off');
+            end
+            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Markers') ...
+                    && axesIdx <= numel(obj.CursorMgr_.Markers)
+                obj.CursorMgr_.Markers{axesIdx} = line(ax, NaN, NaN, ...
+                    'Marker', 'o', 'MarkerSize', 6, ...
+                    'MarkerFaceColor', [0.85 0.32 0.09], ...
+                    'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
+                    'HitTest', 'off', 'PickableParts', 'none', ...
+                    'Tag', 'cursor', 'Visible', 'off');
+            end
+            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'HoverTexts') ...
+                    && axesIdx <= numel(obj.CursorMgr_.HoverTexts)
+                obj.CursorMgr_.HoverTexts{axesIdx} = text(ax, 0, 0, '', ...
+                    'BackgroundColor', [1 1 1 0.85], 'EdgeColor', [0.5 0.5 0.5], ...
+                    'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
+                    'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
+                    'Interpreter', 'none', 'Visible', 'off');
+            end
+        end
+
         function SetMenuEnable(~, menuItem, enabled)
         % SetMenuEnable 设置菜单项可用性
             if isvalid(menuItem)
@@ -1077,8 +1088,12 @@ classdef TimeSeriesView < handle
                 'Padding', [6 6 6 6], 'RowSpacing', 4);
 
             axTime = uiaxes(g);
+            yyaxis(axTime, 'right'); cla(axTime); axTime.YAxis(2).Visible = 'off';
+            yyaxis(axTime, 'left'); cla(axTime);
             axTime.Layout.Row = 1;
             axFreq = uiaxes(g);
+            yyaxis(axFreq, 'right'); cla(axFreq); axFreq.YAxis(2).Visible = 'off';
+            yyaxis(axFreq, 'left'); cla(axFreq);
             axFreq.Layout.Row = 2;
 
             h = struct('fig', fig, 'axTime', axTime, 'axFreq', axFreq);

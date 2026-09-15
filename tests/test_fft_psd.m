@@ -99,10 +99,31 @@ Y1 = signal_noisy;                              % 主信号
 Y2 = A1*sin(2*pi*f1*t) + 0.1*randn(N,1);       % 仅 50Hz + 小噪声
 Y3 = A2*sin(2*pi*f2*t) + 0.1*randn(N,1);       % 仅 200Hz + 小噪声
 
-sa_column_names = {'MultiFreq', 'Only50Hz', 'Only200Hz'};
+data = [Y1, Y2, Y3]; %#ok<NASGU>
 outDir = fileparts(mfilename('fullpath'));
 outFile = fullfile(outDir, 'test_multifreq_standardized.mat');
-save(outFile, 'Y1', 'Y2', 'Y3', 'sa_column_names', 'Fs');
+save(outFile, 'data');
+
+% 创建 _meta.json
+meta = struct();
+meta.source_file = '';
+meta.source_format = 'mat';
+meta.data_hash = '';
+meta.source_stats = struct();
+meta.import_time = datestr(now, 'yyyy-mm-ddTHH:MM:SS');
+meta.row_count = size(data, 1);
+meta.column_count = size(data, 2);
+meta.sample_rate = Fs;
+meta.dataset_name = '';
+meta.columns = struct( ...
+    'index', {1, 2, 3}, ...
+    'name', {'MultiFreq', 'Only50Hz', 'Only200Hz'}, ...
+    'unit', {'', '', ''}, ...
+    'description', {'', '', ''});
+metaPath = strrep(outFile, '.mat', '_meta.json');
+fid = fopen(metaPath, 'w');
+fprintf(fid, '%s', jsonencode(meta, 'PrettyPrint', true));
+fclose(fid);
 fprintf('\n已导出: %s\n', outFile);
 fprintf('  列: MultiFreq (50+200+500Hz), Only50Hz, Only200Hz\n');
 fprintf('  采样率: %d Hz, 时长: %d s, 点数: %d\n', Fs, T, N);

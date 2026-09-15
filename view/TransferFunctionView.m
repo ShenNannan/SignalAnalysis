@@ -65,9 +65,9 @@ classdef TransferFunctionView < handle
         end
 
         function ClearPlots(obj)
-            cla(obj.AmpAxes);
-            cla(obj.PhaseAxes);
-            cla(obj.CorrAxes);
+            cla(obj.AmpAxes, 'reset');
+            cla(obj.PhaseAxes, 'reset');
+            cla(obj.CorrAxes, 'reset');
         end
 
         function RenderFrf(obj, curves)
@@ -167,18 +167,24 @@ classdef TransferFunctionView < handle
             plots.Layout.Column = 2;
 
             obj.AmpAxes = uiaxes(plots);
+            yyaxis(obj.AmpAxes, 'right'); cla(obj.AmpAxes); obj.AmpAxes.YAxis(2).Visible = 'off';
+            yyaxis(obj.AmpAxes, 'left'); cla(obj.AmpAxes);
             obj.AmpAxes.Layout.Row = 1;
             title(obj.AmpAxes, '幅值 Amp vs Freq');
             ylabel(obj.AmpAxes, 'Magnitude (dB)');
             grid(obj.AmpAxes, 'on');
 
             obj.PhaseAxes = uiaxes(plots);
+            yyaxis(obj.PhaseAxes, 'right'); cla(obj.PhaseAxes); obj.PhaseAxes.YAxis(2).Visible = 'off';
+            yyaxis(obj.PhaseAxes, 'left'); cla(obj.PhaseAxes);
             obj.PhaseAxes.Layout.Row = 2;
             title(obj.PhaseAxes, '相位 Phase vs Freq');
             ylabel(obj.PhaseAxes, 'Phase (deg)');
             grid(obj.PhaseAxes, 'on');
 
             obj.CorrAxes = uiaxes(plots);
+            yyaxis(obj.CorrAxes, 'right'); cla(obj.CorrAxes); obj.CorrAxes.YAxis(2).Visible = 'off';
+            yyaxis(obj.CorrAxes, 'left'); cla(obj.CorrAxes);
             obj.CorrAxes.Layout.Row = 3;
             title(obj.CorrAxes, '相关性 Corr vs Freq');
             xlabel(obj.CorrAxes, 'Frequency (Hz)');

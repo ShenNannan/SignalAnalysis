@@ -417,67 +417,51 @@ classdef DataReaderFactory
         function dataset = LoadStandard(matPath)
         % LoadStandard 阶段二：标准化 .mat → Dataset
         %
-        % 加载 .mat + _meta.json，构造 Dataset
-        % 优先级：JSON 的 columns[].unit/description 覆盖 .mat 的 sa_units/sa_descriptions
+        % 加载 .mat（纯数据）+ _meta.json（全部元数据），构造 Dataset
 
             loaded = load(matPath);
-
-            if ~isfield(loaded, 'sa_data_matrix')
-                error('SignalAnalysis:DataReaderFactory:InvalidMat', ...
-                    'Missing sa_data_matrix in %s', matPath);
+            if ~isfield(loaded, 'data')
+                error('SignalAnalysis:DataReaderFactory:InvalidCache', ...
+                    'Missing data in %s — not a valid cache file', matPath);
             end
+            data = loaded.data;
 
-            data = loaded.sa_data_matrix;
-            columnNames = loaded.sa_column_names;
-            sourcePath = loaded.sa_source_file;
-            formatTag = loaded.sa_source_format;
-
-            sampleRate = [];
-            if isfield(loaded, 'sa_sample_rate')
-                sampleRate = loaded.sa_sample_rate;
-            end
-
-            units = {};
-            descriptions = {};
-            if isfield(loaded, 'sa_units')
-                units = loaded.sa_units;
-            end
-            if isfield(loaded, 'sa_descriptions')
-                descriptions = loaded.sa_descriptions;
-            end
-
-            % 读取 _meta.json，用 columns 数组覆盖 units/descriptions/sampleRate
+            % 从 _meta.json 读取全部元数据
             metadata = struct();
             [~, baseName] = fileparts(matPath);
             jsonPath = fullfile(fileparts(matPath), [baseName '_meta.json']);
-            if exist(jsonPath, 'file')
-                try
-                    jsonText = fileread(jsonPath);
-                    meta = jsondecode(jsonText);
-                    metadata.json = meta;
+            if ~exist(jsonPath, 'file')
+                error('SignalAnalysis:DataReaderFactory:MissingMeta', ...
+                    'Missing _meta.json for %s', matPath);
+            end
 
-                    % 从 JSON 读取采样率（如果 .mat 为空）
-                    if isempty(sampleRate) && isfield(meta, 'sample_rate') && ~isempty(meta.sample_rate)
-                        sampleRate = meta.sample_rate;
-                    end
+            meta = jsondecode(fileread(jsonPath));
+            metadata.json = meta;
 
-                    % 从 JSON 的 columns 数组读取 unit/description
-                    if isfield(meta, 'columns') && isstruct(meta.columns)
-                        nCols = size(data, 2);
-                        units = cell(1, nCols);
-                        descriptions = cell(1, nCols);
-                        for c = 1:length(meta.columns)
-                            if c <= nCols
-                                if isfield(meta.columns(c), 'unit')
-                                    units{c} = meta.columns(c).unit;
-                                end
-                                if isfield(meta.columns(c), 'description')
-                                    descriptions{c} = meta.columns(c).description;
-                                end
-                            end
-                        end
+            sourcePath = '';
+            if isfield(meta, 'source_file'), sourcePath = meta.source_file; end
+            formatTag = '';
+            if isfield(meta, 'source_format'), formatTag = meta.source_format; end
+            sampleRate = [];
+            if isfield(meta, 'sample_rate') && ~isempty(meta.sample_rate)
+                sampleRate = meta.sample_rate;
+            end
+
+            nCols = size(data, 2);
+            columnNames = cell(1, nCols);
+            units = cell(1, nCols);
+            descriptions = cell(1, nCols);
+            if isfield(meta, 'columns') && isstruct(meta.columns)
+                for c = 1:min(numel(meta.columns), nCols)
+                    if isfield(meta.columns(c), 'name')
+                        columnNames{c} = meta.columns(c).name;
                     end
-                catch
+                    if isfield(meta.columns(c), 'unit')
+                        units{c} = meta.columns(c).unit;
+                    end
+                    if isfield(meta.columns(c), 'description')
+                        descriptions{c} = meta.columns(c).description;
+                    end
                 end
             end
 
@@ -492,8 +476,25 @@ classdef DataReaderFactory
         %   第2行起：数据矩阵
 
             loaded = load(matPath);
-            data = loaded.sa_data_matrix;
-            columnNames = loaded.sa_column_names;
+            data = loaded.data;
+
+            % 从 _meta.json 读列名
+            columnNames = {};
+            [~, baseName] = fileparts(matPath);
+            metaPath = fullfile(fileparts(matPath), [baseName '_meta.json']);
+            if exist(metaPath, 'file')
+                try
+                    meta = jsondecode(fileread(metaPath));
+                    if isfield(meta, 'columns') && isstruct(meta.columns)
+                        columnNames = cell(1, numel(meta.columns));
+                        for i = 1:numel(meta.columns)
+                            columnNames{i} = meta.columns(i).name;
+                        end
+                    end
+                catch
+                end
+            end
+
             nCols = size(data, 2);
             nRows = size(data, 1);
 
@@ -1072,13 +1073,9 @@ classdef DataReaderFactory
         end
 
         function UpdateSampleRateInMat(matPath, sampleRate)
-        % UpdateSampleRateInMat 更新 .mat + _meta.json 中的采样率
+        % UpdateSampleRateInMat 更新 _meta.json 中的采样率
         %
-        % 用于用户在 UI 界面设置采样率后，回写到 .mat 和 JSON 文件
-
-            loaded = load(matPath);
-            loaded.sa_sample_rate = sampleRate;
-            save(matPath, '-struct', 'loaded');
+        % 用于用户在 UI 界面设置采样率后，回写到 JSON 文件
 
             [outDir, baseName] = fileparts(matPath);
             jsonPath = fullfile(outDir, [baseName '_meta.json']);
@@ -1093,37 +1090,46 @@ classdef DataReaderFactory
         end
 
         function UpdateDatasetNameInMat(matPath, newName)
-        % UpdateDatasetNameInMat 更新 .mat 中的 sa_dataset_name
+        % UpdateDatasetNameInMat 更新 _meta.json 中的 dataset_name
 
-            sa_dataset_name = newName; %#ok<NASGU>
-            save(matPath, 'sa_dataset_name', '-append');
+            [outDir, baseName] = fileparts(matPath);
+            jsonPath = fullfile(outDir, [baseName '_meta.json']);
+            if exist(jsonPath, 'file')
+                try
+                    meta = jsondecode(fileread(jsonPath));
+                    meta.dataset_name = newName;
+                    DataReaderFactory.WriteJson(jsonPath, meta);
+                catch
+                end
+            end
         end
 
         function name = LoadDatasetName(matPath)
-        % LoadDatasetName 从 .mat 读取 sa_dataset_name，无则返回 ''
+        % LoadDatasetName 从 _meta.json 读取 dataset_name，无则返回 ''
 
             name = '';
+            [outDir, baseName] = fileparts(matPath);
+            jsonPath = fullfile(outDir, [baseName '_meta.json']);
+            if ~isfile(jsonPath), return; end
             try
-                S = load(matPath, 'sa_dataset_name');
-                if isfield(S, 'sa_dataset_name') && ~isempty(S.sa_dataset_name)
-                    name = regexprep(strtrim(S.sa_dataset_name), '^[▼▶]\s*', '');
+                meta = jsondecode(fileread(jsonPath));
+                if isfield(meta, 'dataset_name') && ~isempty(meta.dataset_name)
+                    name = regexprep(strtrim(meta.dataset_name), '^[▼▶]\s*', '');
                 end
             catch
             end
         end
 
         function UpdateColumnNamesInMat(matPath, newNames)
-        % UpdateColumnNamesInMat 更新 .mat 中的 sa_column_names
+        % UpdateColumnNamesInMat 更新 _meta.json 中的列名
 
-            sa_column_names = newNames; %#ok<NASGU>
-            save(matPath, 'sa_column_names', '-append');
             DataReaderFactory.UpdateColumnNamesInMeta(matPath, newNames);
         end
 
         function SaveMetadata(matPath, sampleRate, units, descriptions)
-        % SaveMetadata 保存元数据到 _meta.json + 同步更新 .mat
+        % SaveMetadata 保存元数据到 _meta.json
         %
-        % 用于 UI 界面编辑元数据后调用
+        % 用于 UI 界面编辑元数据后调用（只更新 JSON，不重写 .mat）
         %
         % 输入：
         %   matPath      - .mat 文件路径
@@ -1131,67 +1137,30 @@ classdef DataReaderFactory
         %   units        - cell {1×M} 单位
         %   descriptions - cell {1×M} 描述
 
-            loaded = load(matPath);
-            nCols = size(loaded.sa_data_matrix, 2);
-            columnNames = loaded.sa_column_names;
-
-            % 更新 .mat 中的 units/descriptions/sampleRate
-            loaded.sa_sample_rate = sampleRate;
-            loaded.sa_units = units;
-            loaded.sa_descriptions = descriptions;
-
-            sa_data_matrix = loaded.sa_data_matrix; %#ok<NASGU>
-            sa_sample_rate = loaded.sa_sample_rate; %#ok<NASGU>
-            sa_column_names = loaded.sa_column_names; %#ok<NASGU>
-            sa_units = loaded.sa_units; %#ok<NASGU>
-            sa_descriptions = loaded.sa_descriptions; %#ok<NASGU>
-            sa_source_file = ''; if isfield(loaded, 'sa_source_file'), sa_source_file = loaded.sa_source_file; end %#ok<NASGU>
-            sa_source_format = ''; if isfield(loaded, 'sa_source_format'), sa_source_format = loaded.sa_source_format; end %#ok<NASGU>
-            sa_import_time = datestr(now, 'yyyy-mm-ddTHH:MM:SS'); if isfield(loaded, 'sa_import_time'), sa_import_time = loaded.sa_import_time; end %#ok<NASGU>
-
-            save(matPath, ...
-                'sa_data_matrix', 'sa_sample_rate', 'sa_column_names', ...
-                'sa_units', 'sa_descriptions', 'sa_source_file', ...
-                'sa_source_format', 'sa_import_time');
-
-            % 更新 _meta.json
             [~, baseName] = fileparts(matPath);
             jsonPath = fullfile(fileparts(matPath), [baseName '_meta.json']);
 
             meta = struct();
             if exist(jsonPath, 'file')
                 try
-                    jsonText = fileread(jsonPath);
-                    meta = jsondecode(jsonText);
+                    meta = jsondecode(fileread(jsonPath));
                 catch
                 end
             end
 
             meta.sample_rate = sampleRate;
 
-            % 更新 columns 数组
-            columns = cell(1, nCols);
-            for c = 1:nCols
-                col = struct();
-                col.index = c;
-                if ~isempty(columnNames) && c <= length(columnNames)
-                    col.name = columnNames{c};
-                else
-                    col.name = '';
+            % 更新 columns 数组的 unit/description
+            if isfield(meta, 'columns') && isstruct(meta.columns)
+                for c = 1:numel(meta.columns)
+                    if ~isempty(units) && c <= length(units)
+                        meta.columns(c).unit = units{c};
+                    end
+                    if ~isempty(descriptions) && c <= length(descriptions)
+                        meta.columns(c).description = descriptions{c};
+                    end
                 end
-                if ~isempty(units) && c <= length(units)
-                    col.unit = units{c};
-                else
-                    col.unit = '';
-                end
-                if ~isempty(descriptions) && c <= length(descriptions)
-                    col.description = descriptions{c};
-                else
-                    col.description = '';
-                end
-                columns{c} = col;
             end
-            meta.columns = [columns{:}];
 
             DataReaderFactory.WriteJson(jsonPath, meta);
         end
@@ -1269,21 +1238,9 @@ classdef DataReaderFactory
                 end
             end
 
-            % 保存 .mat
-            sa_data_matrix = data; %#ok<NASGU>
-            sa_sample_rate = []; %#ok<NASGU>
-            sa_column_names = colNames; %#ok<NASGU>
-            sa_units = {}; %#ok<NASGU>
-            sa_descriptions = {}; %#ok<NASGU>
-            sa_source_file = sourcePath; %#ok<NASGU>
-            sa_source_format = formatTag; %#ok<NASGU>
-            sa_import_time = datestr(now, 'yyyy-mm-ddTHH:MM:SS'); %#ok<NASGU,DATST>
-
+            % 保存 .mat（纯数据）
             matPath = fullfile(outputDir, [baseName '_standardized.mat']);
-            save(matPath, ...
-                'sa_data_matrix', 'sa_sample_rate', 'sa_column_names', ...
-                'sa_units', 'sa_descriptions', 'sa_source_file', ...
-                'sa_source_format', 'sa_import_time');
+            save(matPath, 'data', '-v7');
 
             % 保存 _meta.json
             meta = struct();
@@ -1291,10 +1248,11 @@ classdef DataReaderFactory
             meta.source_format = formatTag;
             meta.data_hash = DataReaderFactory.ComputeDataHash(data);
             meta.source_stats = DataReaderFactory.CollectSourceStats(sourcePath);
-            meta.import_time = sa_import_time;
+            meta.import_time = datestr(now, 'yyyy-mm-ddTHH:MM:SS');
             meta.row_count = size(data, 1);
             meta.column_count = nCols;
             meta.sample_rate = [];
+            meta.dataset_name = '';
             meta.columns = DataReaderFactory.BuildColumnMeta(colNames, {}, {}, nCols);
 
             jsonPath = fullfile(outputDir, [baseName '_standardized_meta.json']);
@@ -1522,19 +1480,16 @@ classdef DataReaderFactory
         % ParseMatFile .mat 格式解析
         %
         % 优先级：
-        %   1. sa_data_matrix（标准化格式，直接使用）
-        %   2. 收集所有数值向量（≥2行），按长度分组，最长组合并
-        %   3. 单个数值矩阵 → 直接使用
+        %   1. data 变量（标准化格式，直接使用）
+        %   2. 收集所有数值向量（≥2行），按长度分组，最长组合并（列名取变量名）
+        %   3. 单个数值矩阵 → 直接使用（列名：varName_1, varName_2, ...）
 
             loaded = load(filePath);
 
             % 1. 标准化格式
-            if isfield(loaded, 'sa_data_matrix')
-                data = loaded.sa_data_matrix;
+            if isfield(loaded, 'data') && isnumeric(loaded.data) && ismatrix(loaded.data)
+                data = loaded.data;
                 columnNames = {};
-                if isfield(loaded, 'sa_column_names')
-                    columnNames = loaded.sa_column_names;
-                end
                 formatTag = 'mat_standardized';
                 return;
             end
@@ -1556,7 +1511,7 @@ classdef DataReaderFactory
                 end
             end
 
-            % 按长度分组，取最长的组合并
+            % 按长度分组，取最长的组合并（列名取变量名）
             if ~isempty(vecs)
                 lengths = cellfun(@(v) v.len, vecs);
                 maxLen = max(lengths);
@@ -1566,23 +1521,18 @@ classdef DataReaderFactory
                     dataArrays = cellfun(@(v) v.data, longest, 'UniformOutput', false);
                     data = cat(2, dataArrays{:});
                     columnNames = cellfun(@(v) v.name, longest, 'UniformOutput', false);
-                    % 尝试从 sa_column_names 覆盖
-                    if isfield(loaded, 'sa_column_names') && iscell(loaded.sa_column_names)
-                        n = min(length(loaded.sa_column_names), size(data, 2));
-                        columnNames(1:n) = loaded.sa_column_names(1:n);
-                    end
                     formatTag = 'mat';
                     return;
                 end
             end
 
-            % 3. 单个矩阵
+            % 3. 单个矩阵（列名：varName_1, varName_2, ...）
             if ~isempty(matrices)
                 data = matrices{1}.data;
-                columnNames = {};
-                if isfield(loaded, 'sa_column_names')
-                    columnNames = loaded.sa_column_names;
-                end
+                varName = matrices{1}.name;
+                nCols = size(data, 2);
+                columnNames = arrayfun(@(i) sprintf('%s_%d', varName, i), ...
+                    1:nCols, 'UniformOutput', false);
                 formatTag = 'mat';
                 return;
             end

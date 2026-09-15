@@ -642,6 +642,10 @@ classdef TimeSeriesPresenter < BasePresenter
                 obj.View.ShowError(sprintf('切片长度 %d 超过数据总行数 %d', segLen, totalRows));
                 return;
             end
+            if endRow > 2 * totalRows
+                obj.View.ShowError(sprintf('切片范围 %d~%d 超出环缓冲上限 %d', startRow, endRow, 2 * totalRows));
+                return;
+            end
 
             obj.Session.SetChannelSlice(axIdx, chanIdx, startRow, endRow);
             obj.RenderAxes(axIdx);
@@ -1169,11 +1173,8 @@ classdef TimeSeriesPresenter < BasePresenter
             end
 
             % 右键清除当前 axes 的 datatip
-            if d.axesIdx >= 1
-                fig = ancestor(obj.View.Grid_, 'figure');
-                if strcmp(fig.SelectionType, 'alt')
-                    obj.ClearDatatips(d.axesIdx);
-                end
+            if d.axesIdx >= 1 && isfield(d, 'selectionType') && strcmp(d.selectionType, 'alt')
+                obj.ClearDatatips(d.axesIdx);
             end
         end
 
@@ -1219,7 +1220,7 @@ classdef TimeSeriesPresenter < BasePresenter
                     dcm = datacursormode(fig);
                     obj.DataCursorListener_ = addlistener(dcm, 'Enable', 'PostSet', ...
                         @(~, ~) obj.OnDataCursorEnableChanged());
-                catch
+                catch % datacursormode 在 uifigure 中可能不可用，静默忽略
                 end
             end
         end
@@ -1401,7 +1402,7 @@ classdef TimeSeriesPresenter < BasePresenter
                 try
                     dt.DataTipTemplate.DataColumns(2).CustomFormatFcn = ...
                         @(val) obj.formatPrecisionValue(val);
-                catch
+                catch % CustomFormatFcn 在旧版 MATLAB 中可能不支持
                 end
             end
         end
@@ -1451,6 +1452,7 @@ classdef TimeSeriesPresenter < BasePresenter
 
         function str = formatPrecisionValue(~, val_mm)
         % formatPrecisionValue 动态工程单位缩放（mm 基准）
+        % TODO: 支持可配置单位前缀（当前硬编码 mm/um/nm/pm，对非位移数据可能误导）
             absVal = abs(val_mm);
             if absVal == 0
                 str = '0.000 nm';
