@@ -1237,7 +1237,9 @@ classdef TimeSeriesPresenter < BasePresenter
                     chanData = chans{k}.Data;
                     if idx <= length(chanData)
                         yVals(k) = chanData(idx);
-                        readout{end+1} = struct('Label', chans{k}.Label, 'Y', chanData(idx)); %#ok<AGROW>
+                        ds = obj.Session.GetDataset(chans{k}.DatasetIdx);
+                        chanUnit = ds.GetUnit(chans{k}.ColIdx);
+                        readout{end+1} = struct('Label', chans{k}.Label, 'Y', chanData(idx), 'Unit', chanUnit); %#ok<AGROW>
                     end
                     labels{k} = chans{k}.Label;
                 end
@@ -1275,11 +1277,15 @@ classdef TimeSeriesPresenter < BasePresenter
                     if isempty(obj.CursorActiveLine_{gAx}) && ~isempty(dataLines)
                         obj.CursorActiveLine_{gAx} = dataLines(1);
                     end
+                    % 获取通道单位
+                    ds = obj.Session.GetDataset(chans{activeK}.DatasetIdx);
+                    chanUnit = ds.GetUnit(chans{activeK}.ColIdx);
                 else
                     activeLabel = '';
+                    chanUnit = '';
                 end
                 markerData(end+1) = struct('axIdx', gAx, 'x', realX, 'y', snapY, ...
-                    'hoverText', sprintf('  X: %.6g\n  Y: %s', realX, obj.formatPrecisionValue(snapY))); %#ok<AGROW>
+                    'hoverText', sprintf('  X: %.6g\n  Y: %s', realX, obj.formatPrecisionValue(snapY, chanUnit))); %#ok<AGROW>
             end
             obj.View.UpdateCursorMarkers(markerData);
             obj.UpdateCursorReadout(realX, readout);
@@ -1293,7 +1299,12 @@ classdef TimeSeriesPresenter < BasePresenter
             lines = cell(1, length(values)+1);
             lines{1} = sprintf('游标: %.6g', xVal);
             for k = 1:length(values)
-                lines{k+1} = sprintf('%s: %s', values{k}.Label, obj.formatPrecisionValue(values{k}.Y));
+                if isfield(values{k}, 'Unit')
+                    chanUnit = values{k}.Unit;
+                else
+                    chanUnit = '';
+                end
+                lines{k+1} = sprintf('%s: %s', values{k}.Label, obj.formatPrecisionValue(values{k}.Y, chanUnit));
             end
             obj.CursorMgr.InfoLabel.Text = strjoin(lines, newline);
         end
@@ -1351,20 +1362,39 @@ classdef TimeSeriesPresenter < BasePresenter
                 'x0', xData(1), 'dx', dx, 'n', nPts, 'isUniform', isUniform);
         end
 
-        function str = formatPrecisionValue(~, val_mm)
-        % formatPrecisionValue 动态工程单位缩放（mm 基准）
-        % TODO: 支持可配置单位前缀（当前硬编码 mm/um/nm/pm，对非位移数据可能误导）
-            absVal = abs(val_mm);
+        function str = formatPrecisionValue(~, val, unit)
+        % formatPrecisionValue 动态工程单位缩放
+        %   val  - 原始数值
+        %   unit - 可选，数据的实际单位（如 'mm','um','nm'）
+        %          为空时按 mm 基准自动缩放
+            if nargin < 3, unit = ''; end
+            absVal = abs(val);
+            % 有单位信息：直接显示，不做跨量级换算
+            if ~isempty(unit)
+                if absVal == 0
+                    str = sprintf('0.000 %s', unit);
+                elseif absVal >= 1000
+                    str = sprintf('%.1f %s', val, unit);
+                elseif absVal >= 1
+                    str = sprintf('%.3f %s', val, unit);
+                elseif absVal >= 0.001
+                    str = sprintf('%.6f %s', val, unit);
+                else
+                    str = sprintf('%.3e %s', val, unit);
+                end
+                return;
+            end
+            % 无单位：按 mm 基准自动缩放
             if absVal == 0
-                str = '0.000 nm';
+                str = '0.000';
             elseif absVal >= 1
-                str = sprintf('%.3f mm', val_mm);
+                str = sprintf('%.3f mm', val);
             elseif absVal >= 1e-3
-                str = sprintf('%.3f um', val_mm * 1e3);
+                str = sprintf('%.3f um', val * 1e3);
             elseif absVal >= 1e-6
-                str = sprintf('%.3f nm', val_mm * 1e6);
+                str = sprintf('%.3f nm', val * 1e6);
             else
-                str = sprintf('%.3f pm', val_mm * 1e9);
+                str = sprintf('%.3f pm', val * 1e9);
             end
         end
 
