@@ -1166,7 +1166,7 @@ classdef TimeSeriesView < handle
                        'btnOk', btnOk, 'btnCancel', btnCancel);
         end
 
-        function result = ShowSampleRateDialog(~, ~, defaultVal)
+        function result = ShowSampleRateDialog(~, dsName, defaultVal)
         % ShowSampleRateDialog 弹窗输入采样率（inputdlg 原生模态）
         %
         % 输入：
@@ -1180,7 +1180,7 @@ classdef TimeSeriesView < handle
             result = [];
             if isnumeric(defaultVal), defaultVal = num2str(defaultVal); end
 
-            answer = inputdlg({'采样率 (Hz):'}, ...
+            answer = inputdlg({sprintf('数据集:%s\n采样率 (Hz):', dsName)}, ...
                 '设置采样率', [1 40], {defaultVal});
             if isempty(answer), return; end
 
@@ -1199,9 +1199,9 @@ classdef TimeSeriesView < handle
         %   result - [start, len] 或 []
 
             result = [];
-            prompt = {sprintf('共 %d 行，起点行号:', totalRows), '长度:'};
-            answer = inputdlg(prompt, sprintf('切片范围 - %s', colName), ...
-                [1 40], {num2str(defaultStart), num2str(defaultLen)});
+            prompt = {sprintf('通道:%s  (共 %d 行)\n起点行号:', colName, totalRows), '长度:'};
+            answer = inputdlg(prompt, '设置切片范围', [1 40; 1 40], ...
+                {num2str(defaultStart), num2str(defaultLen)});
             if isempty(answer), return; end
 
             s = round(str2double(answer{1}));
