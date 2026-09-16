@@ -935,6 +935,43 @@ classdef DataReaderFactory
             catch
             end
         end
+
+        function matPath = SaveStandard(data, colNames, outputDir, baseName, sourcePath, formatTag)
+        % SaveStandard 保存标准化结果（.mat + _meta.json）
+        % Excel 导出改为手动：DataReaderFactory.ExportToExcel
+            if ~exist(outputDir, 'dir')
+                mkdir(outputDir);
+            end
+
+            nCols = size(data, 2);
+
+            % 确保 colNames 长度匹配
+            if length(colNames) < nCols
+                for i = length(colNames)+1:nCols
+                    colNames{i} = sprintf('Channel_%d', i);
+                end
+            end
+
+            % 保存 .mat（纯数据）
+            matPath = fullfile(outputDir, [baseName '_standardized.mat']);
+            save(matPath, 'data', '-v7');
+
+            % 保存 _meta.json
+            meta = struct();
+            meta.source_file = sourcePath;
+            meta.source_format = formatTag;
+            meta.data_hash = DataReaderFactory.ComputeDataHash(data);
+            meta.source_stats = DataReaderFactory.CollectSourceStats(sourcePath);
+            meta.import_time = datestr(now, 'yyyy-mm-ddTHH:MM:SS');
+            meta.row_count = size(data, 1);
+            meta.column_count = nCols;
+            meta.sample_rate = [];
+            meta.dataset_name = '';
+            meta.columns = DataReaderFactory.BuildColumnMeta(colNames, {}, {}, nCols);
+
+            jsonPath = fullfile(outputDir, [baseName '_standardized_meta.json']);
+            DataReaderFactory.WriteJson(jsonPath, meta);
+        end
     end
 
     methods (Static, Access = private)
@@ -1005,43 +1042,6 @@ classdef DataReaderFactory
             end
             % 去重（合并后可能同名，如两个 'ERROR'）
             colNames = DataReaderFactory.DeduplicateNames(colNames, true);
-        end
-
-        function matPath = SaveStandard(data, colNames, outputDir, baseName, sourcePath, formatTag)
-        % SaveStandard 保存标准化结果（.mat + _meta.json）
-        % Excel 导出改为手动：DataReaderFactory.ExportToExcel
-            if ~exist(outputDir, 'dir')
-                mkdir(outputDir);
-            end
-
-            nCols = size(data, 2);
-
-            % 确保 colNames 长度匹配
-            if length(colNames) < nCols
-                for i = length(colNames)+1:nCols
-                    colNames{i} = sprintf('Channel_%d', i);
-                end
-            end
-
-            % 保存 .mat（纯数据）
-            matPath = fullfile(outputDir, [baseName '_standardized.mat']);
-            save(matPath, 'data', '-v7');
-
-            % 保存 _meta.json
-            meta = struct();
-            meta.source_file = sourcePath;
-            meta.source_format = formatTag;
-            meta.data_hash = DataReaderFactory.ComputeDataHash(data);
-            meta.source_stats = DataReaderFactory.CollectSourceStats(sourcePath);
-            meta.import_time = datestr(now, 'yyyy-mm-ddTHH:MM:SS');
-            meta.row_count = size(data, 1);
-            meta.column_count = nCols;
-            meta.sample_rate = [];
-            meta.dataset_name = '';
-            meta.columns = DataReaderFactory.BuildColumnMeta(colNames, {}, {}, nCols);
-
-            jsonPath = fullfile(outputDir, [baseName '_standardized_meta.json']);
-            DataReaderFactory.WriteJson(jsonPath, meta);
         end
 
         function columns = BuildColumnMeta(colNames, units, descriptions, nCols)

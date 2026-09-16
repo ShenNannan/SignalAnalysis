@@ -175,13 +175,14 @@ classdef TimeSeriesView < handle
         function ClearAxes(obj, axesIdx)
             ax = obj.GetAxes(axesIdx);
             if ~isempty(ax) && isvalid(ax)
-                legend(ax, 'off');
-                % 手动清除两条 Y 轴（不用 cla('reset') 避免重建 axes 结构）
-                yyaxis(ax, 'right');
-                cla(ax);
-                ax.YAxis(2).Visible = 'off';
+                savedFcn = ax.ButtonDownFcn;
+                % cla('reset') 彻底清除 axes 内容 + linkaxes 残留状态
                 yyaxis(ax, 'left');
-                cla(ax);
+                cla(ax, 'reset');
+                grid(ax, 'on');
+                ax.ButtonDownFcn = savedFcn;
+                ax.XLimMode = 'auto';
+                ax.YLimMode = 'auto';
             end
         end
 
@@ -211,6 +212,9 @@ classdef TimeSeriesView < handle
 
             % 保存交互属性
             savedButtonDownFcn = ax.ButtonDownFcn;
+
+            % 暂时隐藏 axes，避免 cla→plot 中间帧闪烁
+            ax.Visible = 'off';
 
             % 手动清除两条 Y 轴（不用 cla('reset') 避免 R2025b 重建双Y结构）
             yyaxis(ax, 'right');
@@ -281,14 +285,17 @@ classdef TimeSeriesView < handle
 
             grid(ax, 'on');
 
-            if numel(allLines) >= 2
+            if ~isempty(allLines)
                 legend(ax, allLines, 'Interpreter', 'none', 'Location', 'northwest');
-            elseif isscalar(allLines)
+            else
                 legend(ax, 'off');
             end
 
             % 重建游标（必须在所有 cla/plot 完成之后）
             obj.RebuildCursorObjects(ax, axesIdx);
+
+            % 渲染完成，恢复可见
+            ax.Visible = 'on';
         end
 
         function RefreshLegends(obj)
