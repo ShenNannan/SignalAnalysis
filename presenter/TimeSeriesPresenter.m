@@ -1265,6 +1265,8 @@ classdef TimeSeriesPresenter < BasePresenter
                 yyaxis(ax, 'left'); ylL = get(ax, 'YLim');
                 yyaxis(ax, 'right'); ylR = get(ax, 'YLim');
                 yyaxis(ax, 'left');
+                oldUnits = ax.Units; ax.Units = 'pixels';
+                axHeightPx = ax.Position(4); ax.Units = oldUnits;
                 rightYRefs = obj.Session.GetRightYChannel(gAx);
                 isRightYMask = false(1, length(chans));
                 for k = 1:length(chans)
@@ -1277,7 +1279,7 @@ classdef TimeSeriesPresenter < BasePresenter
                     end
                 end
                 [activeK, snapY] = ChannelOperations.SnapToNearestChannel(...
-                    yVals, d.mouseY, ylL, ylR, isRightYMask);
+                    yVals, d.mouseY, ylL, ylR, isRightYMask, axHeightPx);
 
                 % marker 在左Y侧，吸附到右Y通道时需转换坐标
                 snapYForMarker = snapY;

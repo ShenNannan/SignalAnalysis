@@ -205,8 +205,8 @@ classdef ChannelOperations
             end
         end
 
-        function [activeIdx, snapY] = SnapToNearestChannel(yVals, mouseY, yLimLeft, yLimRight, isRightYMask)
-        % SnapToNearestChannel 归一化坐标吸附到最近通道
+        function [activeIdx, snapY] = SnapToNearestChannel(yVals, mouseY, yLimLeft, yLimRight, isRightYMask, axHeightPx)
+        % SnapToNearestChannel 像素空间吸附到最近通道
         %
         % 输入：
         %   yVals        - 1×N 各通道 Y 值（NaN 表示无效）
@@ -214,10 +214,13 @@ classdef ChannelOperations
         %   yLimLeft     - 左 Y 轴 [min, max]
         %   yLimRight    - 右 Y 轴 [min, max]
         %   isRightYMask - 1×N logical，true 表示该通道在右 Y 轴
+        %   axHeightPx   - axes 像素高度（用于像素距离计算）
         %
         % 输出：
-        %   activeIdx - 最近通道索引（无有效通道时返回 0）
+        %   activeIdx - 最近通道索引（无有效通道或超出阈值返回 0）
         %   snapY     - 吸附后的 Y 值（通道原生坐标系）
+
+            SNAP_RADIUS = 30;  % 最大吸附半径（像素）
 
             validMask = ~isnan(yVals);
             if ~any(validMask)
@@ -225,19 +228,32 @@ classdef ChannelOperations
                 snapY = NaN;
                 return;
             end
-            % 用左Y轴计算鼠标屏幕归一化位置（物理位置占比）
-            mouseYNorm = (mouseY - yLimLeft(1)) / (yLimLeft(2) - yLimLeft(1));
+
+            % 计算各轴的 pixels/data-unit
+            leftSpan = yLimLeft(2) - yLimLeft(1);
+            rightSpan = yLimRight(2) - yLimRight(1);
+            pxPerUnitLeft  = axHeightPx / max(leftSpan, eps);
+            pxPerUnitRight = axHeightPx / max(rightSpan, eps);
+
+            % 像素距离
             dists = nan(1, length(yVals));
             for vi = find(validMask)
                 if isRightYMask(vi)
-                    % 右Y通道：将屏幕归一化位置映射到右Y轴坐标系再比较
-                    valNorm = (yVals(vi) - yLimRight(1)) / (yLimRight(2) - yLimRight(1));
+                    % 右Y通道：mouseY 先从左Y坐标转到右Y坐标
+                    mouseNorm = (mouseY - yLimLeft(1)) / max(leftSpan, eps);
+                    mouseYRight = mouseNorm * rightSpan + yLimRight(1);
+                    dists(vi) = abs(yVals(vi) - mouseYRight) * pxPerUnitRight;
                 else
-                    valNorm = (yVals(vi) - yLimLeft(1)) / (yLimLeft(2) - yLimLeft(1));
+                    dists(vi) = abs(yVals(vi) - mouseY) * pxPerUnitLeft;
                 end
-                dists(vi) = abs(valNorm - mouseYNorm);
             end
-            [~, nearestK] = min(dists(validMask));
+
+            [minDist, nearestK] = min(dists(validMask));
+            if minDist > SNAP_RADIUS
+                activeIdx = 0;
+                snapY = NaN;
+                return;
+            end
             validIdx = find(validMask);
             activeIdx = validIdx(nearestK);
             snapY = yVals(activeIdx);
