@@ -1279,6 +1279,13 @@ classdef TimeSeriesPresenter < BasePresenter
                 [activeK, snapY] = ChannelOperations.SnapToNearestChannel(...
                     yVals, d.mouseY, ylL, ylR, isRightYMask);
 
+                % marker 在左Y侧，吸附到右Y通道时需转换坐标
+                snapYForMarker = snapY;
+                if activeK > 0 && isRightYMask(activeK)
+                    snapNorm = (snapY - ylR(1)) / (ylR(2) - ylR(1));
+                    snapYForMarker = snapNorm * (ylL(2) - ylL(1)) + ylL(1);
+                end
+
                 if activeK > 0
                     activeLabel = labels{activeK};
                     % 记录吸附后的曲线句柄（使用缓存）
@@ -1294,7 +1301,7 @@ classdef TimeSeriesPresenter < BasePresenter
                         obj.CursorActiveLine_{gAx} = dataLines(1);
                     end
                 end
-                markerData(end+1) = struct('axIdx', gAx, 'x', realX, 'y', snapY, ...
+                markerData(end+1) = struct('axIdx', gAx, 'x', realX, 'y', snapYForMarker, ...
                     'hoverText', sprintf('  X: %.6g\n  Y: %s', realX, obj.formatPrecisionValue(snapY))); %#ok<AGROW>
             end
             obj.View.UpdateCursorMarkers(markerData);

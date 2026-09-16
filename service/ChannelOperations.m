@@ -210,14 +210,14 @@ classdef ChannelOperations
         %
         % 输入：
         %   yVals        - 1×N 各通道 Y 值（NaN 表示无效）
-        %   mouseY       - 鼠标 Y 坐标（物理坐标）
+        %   mouseY       - 鼠标 Y 坐标（左Y轴坐标系）
         %   yLimLeft     - 左 Y 轴 [min, max]
         %   yLimRight    - 右 Y 轴 [min, max]
         %   isRightYMask - 1×N logical，true 表示该通道在右 Y 轴
         %
         % 输出：
         %   activeIdx - 最近通道索引（无有效通道时返回 0）
-        %   snapY     - 吸附后的 Y 值
+        %   snapY     - 吸附后的 Y 值（通道原生坐标系）
 
             validMask = ~isnan(yVals);
             if ~any(validMask)
@@ -225,15 +225,17 @@ classdef ChannelOperations
                 snapY = NaN;
                 return;
             end
-            mouseNorm = (mouseY - yLimLeft(1)) / (yLimLeft(2) - yLimLeft(1));
+            % 用左Y轴计算鼠标屏幕归一化位置（物理位置占比）
+            mouseYNorm = (mouseY - yLimLeft(1)) / (yLimLeft(2) - yLimLeft(1));
             dists = nan(1, length(yVals));
             for vi = find(validMask)
                 if isRightYMask(vi)
+                    % 右Y通道：将屏幕归一化位置映射到右Y轴坐标系再比较
                     valNorm = (yVals(vi) - yLimRight(1)) / (yLimRight(2) - yLimRight(1));
                 else
                     valNorm = (yVals(vi) - yLimLeft(1)) / (yLimLeft(2) - yLimLeft(1));
                 end
-                dists(vi) = abs(valNorm - mouseNorm);
+                dists(vi) = abs(valNorm - mouseYNorm);
             end
             [~, nearestK] = min(dists(validMask));
             validIdx = find(validMask);

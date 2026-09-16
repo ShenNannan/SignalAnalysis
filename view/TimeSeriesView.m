@@ -1039,13 +1039,16 @@ classdef TimeSeriesView < handle
                 'HandleVisibility', 'off');
             obj.CursorMgr_.Lines{axesIdx} = h1;
             % 重建吸附 Marker
+            % YLimInclude/XLimInclude='off'：marker 不参与坐标轴范围计算，
+            % 避免双Y模式下大范围数据的 snapY 拉伸小范围坐标轴
             h2 = line(ax, NaN, NaN, ...
                 'Marker', 'o', 'MarkerSize', 6, ...
                 'MarkerFaceColor', [0.85 0.32 0.09], ...
                 'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
                 'HitTest', 'off', 'PickableParts', 'none', ...
                 'Tag', 'cursor', 'Visible', 'off', ...
-                'HandleVisibility', 'off');
+                'HandleVisibility', 'off', ...
+                'YLimInclude', 'off', 'XLimInclude', 'off');
             obj.CursorMgr_.Markers{axesIdx} = h2;
             % 重建悬浮文本
             h3 = text(ax, 0, 0, '', ...
@@ -1053,7 +1056,8 @@ classdef TimeSeriesView < handle
                 'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
                 'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
                 'Interpreter', 'none', 'Visible', 'off', ...
-                'HandleVisibility', 'off');
+                'HandleVisibility', 'off', ...
+                'XLimInclude', 'off', 'YLimInclude', 'off');
             obj.CursorMgr_.HoverTexts{axesIdx} = h3;
             % 验证创建成功
             if ~isgraphics(h1) || ~isgraphics(h2) || ~isgraphics(h3)
@@ -1162,7 +1166,7 @@ classdef TimeSeriesView < handle
                        'btnOk', btnOk, 'btnCancel', btnCancel);
         end
 
-        function result = ShowSampleRateDialog(~, dsName, defaultVal)
+        function result = ShowSampleRateDialog(~, ~, defaultVal)
         % ShowSampleRateDialog 弹窗输入采样率（inputdlg 原生模态）
         %
         % 输入：
@@ -1176,7 +1180,7 @@ classdef TimeSeriesView < handle
             result = [];
             if isnumeric(defaultVal), defaultVal = num2str(defaultVal); end
 
-            answer = inputdlg({sprintf('采样率 (Hz):', dsName)}, ...
+            answer = inputdlg({'采样率 (Hz):'}, ...
                 '设置采样率', [1 40], {defaultVal});
             if isempty(answer), return; end
 
@@ -1228,16 +1232,28 @@ classdef TimeSeriesView < handle
         end
 
         function onCursorMotion(obj)
-        % onCursorMotion 全局鼠标移动：边界保护 + drawnow limitrate 节流
+        % onCursorMotion 全局鼠标移动：像素坐标命中测试 + drawnow limitrate 节流
+        % 用 fig.CurrentPoint + axes.Position（像素）判断鼠标在哪个 axes 上，
+        % 不依赖 ax.CurrentPoint + 数据边界（放大后会误判）
             if isempty(obj.CursorMgr_), return; end
             if ~isfield(obj.CursorMgr_, 'Lines') || isempty(obj.CursorMgr_.Lines), return; end
 
+            fig = ancestor(obj.Grid_, 'figure');
+            if isempty(fig) || ~isvalid(fig), return; end
+            figPt = fig.CurrentPoint;  % 像素坐标 [x, y]（左下角原点）
+
             for i = 1:obj.AxesCount_
                 ax = obj.AxesHandles_{i};
-                cp = ax.CurrentPoint;
-                xl = xlim(ax); yl = ylim(ax);
-                if cp(1,1) >= xl(1) && cp(1,1) <= xl(2) && ...
-                   cp(1,2) >= yl(1) && cp(1,2) <= yl(2)
+                if ~isvalid(ax), continue; end
+                % 获取 axes 像素矩形（需要先切到 pixels 单位）
+                oldUnits = ax.Units;
+                ax.Units = 'pixels';
+                pos = ax.Position;  % [left, bottom, width, height]
+                ax.Units = oldUnits;
+                % 像素命中测试
+                if figPt(1) >= pos(1) && figPt(1) <= pos(1)+pos(3) && ...
+                   figPt(2) >= pos(2) && figPt(2) <= pos(2)+pos(4)
+                    cp = ax.CurrentPoint;
                     notify(obj, 'CursorMotion', ...
                         AppEventData(struct('axesIdx', i, 'x', cp(1,1), 'mouseY', cp(1,2))));
                     drawnow limitrate;
