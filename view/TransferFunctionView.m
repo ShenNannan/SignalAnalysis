@@ -1,41 +1,57 @@
 classdef TransferFunctionView < handle
-% TransferFunctionView - 传函分析视图（FRF 频响查看器，哑终端）
-%
-% 只做控件装配、渲染与事件广播，零业务逻辑。
-% 布局：左（路径 + 曲线勾选表 + Browse/Import）| 右（幅值/相位/相关性 3 子图）
-% 与 TimeSeriesView 保持一致的左右分栏布局。
+%TRANSFERFUNCTIONVIEW  Hollow L3 mediator for FRF frequency-domain analysis.
+%   Fixed 3-axes layout (Amp / Phase / Corr) with synchronized cursors.
+%   Instantiates CursorComponent per axes, proxies events to Presenter.
+
+    events
+        BrowseClicked
+        ImportButtonClicked
+        ClearAllClicked
+        CurveSelectionChanged   % struct('row', N)
+        CursorSync              % struct('freq', F, 'sourceAxes', N)
+    end
 
     properties (SetAccess = private)
-        Grid_           % 顶层 uigridlayout
-        CurveTable      % uitable（logical 勾选列 + 曲线名列）
-        AmpAxes         % uiaxes 幅值
-        PhaseAxes       % uiaxes 相位
-        CorrAxes        % uiaxes 相关性
-        LoadingDlg_     % uiprogressdlg
+        Grid                % top uigridlayout
+        CurveTableH         % uitable (simple checkbox + name)
+        AmpAxes             % uiaxes
+        PhaseAxes           % uiaxes
+        CorrAxes            % uiaxes
+    end
+
+    properties (SetAccess = private)
+        Path_               % selected folder/file path
+        Toaster             % AsyncToaster (RAII)
+        AmpCursor           % CursorComponent
+        PhaseCursor         % CursorComponent
+        CorrCursor          % CursorComponent
     end
 
     properties (Access = private)
-        Path_           % 当前选择的路径
-    end
-
-    events
-        BrowseClicked           % 浏览按钮
-        ImportButtonClicked     % 导入按钮（路径经 GetPath 读取）
-        ClearAllClicked         % 清空全部
-        CurveSelectionChanged   % 载荷 struct('row', 行号)
+        SuppressSync logical = false  % prevent sync loops
     end
 
     methods
+        % ================================================================
+        %  Construction
+        % ================================================================
+
         function obj = TransferFunctionView(parent)
-            obj.Grid_ = uigridlayout(parent, [1 2], ...
+        %TRANSFERFUNCTIONVIEW  Build layout and instantiate L2 components.
+
+            obj.Grid = uigridlayout(parent, [1 2], ...
                 'ColumnWidth', {'22x', '78x'}, ...
                 'Padding', [6 6 6 6], ...
                 'ColumnSpacing', 6);
-            obj.LoadingDlg_ = [];
 
-            obj.BuildLeftPanel();
-            obj.BuildRightPanel();
+            obj.buildLeftPanel();
+            obj.buildRightPanel();
+
         end
+
+        % ================================================================
+        %  Path management
+        % ================================================================
 
         function path = GetPath(obj)
             path = obj.Path_;
@@ -45,165 +61,280 @@ classdef TransferFunctionView < handle
             obj.Path_ = path;
         end
 
+        % ================================================================
+        %  Curve list (called by Presenter)
+        % ================================================================
+
         function SetCurveList(obj, names, checked)
-        % SetCurveList 填充曲线勾选表
+        %SETCURVELIST  Populate the curve checkbox table.
             n = numel(names);
             if nargin < 3 || isempty(checked)
                 checked = true(n, 1);
             end
-            obj.CurveTable.Data = table(checked(:), names(:), ...
+            obj.CurveTableH.Data = table(checked(:), names(:), ...
                 'VariableNames', {'选择', '曲线'});
         end
 
         function checked = GetCurveSelection(obj)
-            data = obj.CurveTable.Data;
+            data = obj.CurveTableH.Data;
             if isempty(data)
                 checked = [];
-                return;
+            else
+                checked = data.(1);
             end
-            checked = data.(1);
         end
 
-        function ClearPlots(obj)
-            cla(obj.AmpAxes, 'reset');
-            cla(obj.PhaseAxes, 'reset');
-            cla(obj.CorrAxes, 'reset');
-        end
+        % ================================================================
+        %  Render API (called by Presenter)
+        % ================================================================
 
         function RenderFrf(obj, curves)
-        % RenderFrf 在三张子图上叠画 FRF 曲线（跳过 Freq=0，Corr ylim [0 1]）
+        %RENDERFRF  Draw FRF curves on all three axes (skip Freq=0).
             obj.ClearPlots();
             nPlotted = 0;
+
             for i = 1:numel(curves)
                 c = curves(i);
                 mask = c.freq > 0;
-                if ~any(mask)
-                    continue;
-                end
+                if ~any(mask), continue; end
                 nPlotted = nPlotted + 1;
-                semilogx(obj.AmpAxes, c.freq(mask), c.amp(mask), 'DisplayName', c.name);
+
+                semilogx(obj.AmpAxes, c.freq(mask), c.amp(mask), ...
+                    'DisplayName', c.name);
                 hold(obj.AmpAxes, 'on');
-                semilogx(obj.PhaseAxes, c.freq(mask), c.phase(mask), 'DisplayName', c.name);
+
+                semilogx(obj.PhaseAxes, c.freq(mask), c.phase(mask), ...
+                    'DisplayName', c.name);
                 hold(obj.PhaseAxes, 'on');
-                semilogx(obj.CorrAxes, c.freq(mask), c.corr(mask), 'DisplayName', c.name);
+
+                semilogx(obj.CorrAxes, c.freq(mask), c.corr(mask), ...
+                    'DisplayName', c.name);
                 hold(obj.CorrAxes, 'on');
             end
-            hold(obj.AmpAxes, 'off');
+
+            hold(obj.AmpAxes,   'off');
             hold(obj.PhaseAxes, 'off');
-            hold(obj.CorrAxes, 'off');
+            hold(obj.CorrAxes,  'off');
             ylim(obj.CorrAxes, [0 1]);
 
-            % legend 在隐藏页签内创建会得到空条目（MATLAB 渲染初始化限制），
-            % 统一走 RefreshLegends：切换页签可见后由 app 再次触发
             obj.RefreshLegends();
         end
 
+        function ClearPlots(obj)
+            obj.deleteDataLines(obj.AmpAxes);
+            obj.deleteDataLines(obj.PhaseAxes);
+            obj.deleteDataLines(obj.CorrAxes);
+        end
+
+        % ================================================================
+        %  Cursor sync (called by Presenter)
+        % ================================================================
+
+        function SyncCursorToFreq(obj, freq, excludeIdx)
+        %SYNCCURSORTOFREQ  Move all cursors to a frequency (except source).
+            obj.SuppressSync = true;
+            if excludeIdx ~= 1, obj.AmpCursor.SetPosition(freq);   end
+            if excludeIdx ~= 2, obj.PhaseCursor.SetPosition(freq); end
+            if excludeIdx ~= 3, obj.CorrCursor.SetPosition(freq);  end
+            obj.SuppressSync = false;
+        end
+
+        % ================================================================
+        % ================================================================
+        %  Public: Host-dispatched cursor motion (replaces registerCursorMotion)
+        % ================================================================
+
+        function ProcessMouseMotion(obj)
+        %PROCESSMOUSEMOTION  Called by Host layer to drive cursor.
+        %   Replaces direct fig.WindowButtonMotionFcn registration.
+            obj.onCursorMotion();
+        end
+
+        %  Dialog / utility methods
+        % ================================================================
+
         function RefreshLegends(obj)
-        % RefreshLegends 为三张子图重建 legend（页签切换可见后由 app 调用）
-            obj.CleanupBrokenLegends();
-            obj.RefreshLegendFor(obj.AmpAxes);
-            obj.RefreshLegendFor(obj.PhaseAxes);
-            obj.RefreshLegendFor(obj.CorrAxes);
+            obj.refreshLegendFor(obj.AmpAxes);
+            obj.refreshLegendFor(obj.PhaseAxes);
+            obj.refreshLegendFor(obj.CorrAxes);
         end
 
         function ShowLoading(obj, msg)
-        % ShowLoading 显示阻断式加载弹窗
             if nargin < 2, msg = '处理中...'; end
-            obj.LoadingDlg_ = uiprogressdlg(ancestor(obj.Grid_, 'figure'), ...
-                'Title', '请稍候', 'Message', msg, 'Indeterminate', 'on');
-            drawnow;
+            fig = ancestor(obj.Grid, 'figure');
+            obj.Toaster = AsyncToaster(fig, '请稍候', msg);
+            drawnow limitrate;   % 确保弹窗在重计算前刷新到屏幕
         end
 
         function CloseLoading(obj)
-        % CloseLoading 关闭加载弹窗
-            if ~isempty(obj.LoadingDlg_) && isvalid(obj.LoadingDlg_)
-                close(obj.LoadingDlg_);
-            end
-            obj.LoadingDlg_ = [];
+            obj.Toaster = [];
         end
 
         function ShowError(obj, msg)
-            ViewUtils.ShowError(obj, msg);
+            fig = ancestor(obj.Grid, 'figure');
+            uialert(fig, msg, '错误', 'Icon', 'error');
+        end
+
+        function ShowInfo(obj, msg)
+            fig = ancestor(obj.Grid, 'figure');
+            uialert(fig, msg, '提示', 'Icon', 'success');
         end
     end
 
+    % ================================================================
+    %  Private: construction helpers
+    % ================================================================
     methods (Access = private)
-        function BuildLeftPanel(obj)
-            left = uigridlayout(obj.Grid_, [2 1], ...
+
+        function buildLeftPanel(obj)
+            left = uigridlayout(obj.Grid, [2 1], ...
                 'RowHeight', {'1x', 36}, ...
                 'RowSpacing', 6, ...
                 'Padding', [0 0 0 0]);
             left.Layout.Column = 1;
 
-            % 曲线勾选表
-            obj.CurveTable = uitable(left, ...
+            obj.CurveTableH = uitable(left, ...
                 'ColumnName', {'选择', '曲线'}, ...
                 'ColumnEditable', [true false], ...
                 'ColumnWidth', {38, '1x'});
-            obj.CurveTable.Layout.Row = 1;
-            obj.CurveTable.Data = table(true(0, 1), cell(0, 1), ...
+            obj.CurveTableH.Layout.Row = 1;
+            obj.CurveTableH.Data = table(true(0,1), cell(0,1), ...
                 'VariableNames', {'选择', '曲线'});
-            obj.CurveTable.CellEditCallback = @(s, e) obj.OnCurveEdit(e);
+            obj.CurveTableH.CellEditCallback = @(s,e) obj.onCurveEdit(e);
 
-            % Browse / Import / Clear All 按钮
             btns = uigridlayout(left, [1 3], ...
                 'ColumnWidth', {'1x', '1x', '1x'}, ...
-                'ColumnSpacing', 4, ...
-                'Padding', [0 0 0 0]);
+                'ColumnSpacing', 4, 'Padding', [0 0 0 0]);
             btns.Layout.Row = 2;
             uibutton(btns, 'push', 'Text', 'Browse...', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'BrowseClicked'));
+                'ButtonPushedFcn', @(s,e) notify(obj, 'BrowseClicked'));
             uibutton(btns, 'push', 'Text', 'Import', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'ImportButtonClicked'));
+                'ButtonPushedFcn', @(s,e) notify(obj, 'ImportButtonClicked'));
             uibutton(btns, 'push', 'Text', 'Clear All', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'ClearAllClicked'));
+                'ButtonPushedFcn', @(s,e) notify(obj, 'ClearAllClicked'));
         end
 
-        function BuildRightPanel(obj)
-            plots = uigridlayout(obj.Grid_, [3 1], ...
+        function buildRightPanel(obj)
+            plots = uigridlayout(obj.Grid, [3 1], ...
                 'RowHeight', {'1x', '1x', '1x'}, ...
-                'RowSpacing', 4, ...
-                'Padding', [0 0 0 0]);
+                'RowSpacing', 4, 'Padding', [0 0 0 0]);
             plots.Layout.Column = 2;
 
             obj.AmpAxes = uiaxes(plots);
-            yyaxis(obj.AmpAxes, 'right'); cla(obj.AmpAxes); obj.AmpAxes.YAxis(2).Visible = 'off';
-            yyaxis(obj.AmpAxes, 'left'); cla(obj.AmpAxes);
             obj.AmpAxes.Layout.Row = 1;
             title(obj.AmpAxes, '幅值 Amp vs Freq');
             ylabel(obj.AmpAxes, 'Magnitude (dB)');
             grid(obj.AmpAxes, 'on');
 
             obj.PhaseAxes = uiaxes(plots);
-            yyaxis(obj.PhaseAxes, 'right'); cla(obj.PhaseAxes); obj.PhaseAxes.YAxis(2).Visible = 'off';
-            yyaxis(obj.PhaseAxes, 'left'); cla(obj.PhaseAxes);
             obj.PhaseAxes.Layout.Row = 2;
             title(obj.PhaseAxes, '相位 Phase vs Freq');
             ylabel(obj.PhaseAxes, 'Phase (deg)');
             grid(obj.PhaseAxes, 'on');
 
             obj.CorrAxes = uiaxes(plots);
-            yyaxis(obj.CorrAxes, 'right'); cla(obj.CorrAxes); obj.CorrAxes.YAxis(2).Visible = 'off';
-            yyaxis(obj.CorrAxes, 'left'); cla(obj.CorrAxes);
             obj.CorrAxes.Layout.Row = 3;
             title(obj.CorrAxes, '相关性 Corr vs Freq');
             xlabel(obj.CorrAxes, 'Frequency (Hz)');
             ylabel(obj.CorrAxes, 'Coherence');
             grid(obj.CorrAxes, 'on');
+
+            % Create CursorComponents (data-agnostic, log-X aware)
+            obj.AmpCursor   = CursorComponent(obj.AmpAxes,   1);
+            obj.PhaseCursor = CursorComponent(obj.PhaseAxes, 2);
+            obj.CorrCursor  = CursorComponent(obj.CorrAxes,  3);
+
+            % Wire cursor snap → cross-axis sync event
+            addlistener(obj.AmpCursor,   'CursorSnapped', @(s,e) obj.onCursorSnapped(e));
+            addlistener(obj.PhaseCursor, 'CursorSnapped', @(s,e) obj.onCursorSnapped(e));
+            addlistener(obj.CorrCursor,  'CursorSnapped', @(s,e) obj.onCursorSnapped(e));
         end
 
-        function OnCurveEdit(obj, e)
-            notify(obj, 'CurveSelectionChanged', AppEventData(struct('row', e.Indices(1))));
+        function registerCursorMotion(obj)
+            fig = ancestor(obj.Grid, 'figure');
+            if isempty(fig), return; end
+            fig.WindowButtonMotionFcn = @(s,e) obj.onCursorMotion();
         end
 
-        function CleanupBrokenLegends(obj)
-        % CleanupBrokenLegends 删除空条目 legend（隐藏页签内创建产生的工件）
-            ViewUtils.CleanupBrokenLegends(ancestor(obj.Grid_, 'figure'));
+        % ================================================================
+        %  Private: callbacks
+        % ================================================================
+
+        function onCurveEdit(obj, e)
+            notify(obj, 'CurveSelectionChanged', ...
+                AppEventData(struct('row', e.Indices(1))));
         end
 
-        function RefreshLegendFor(obj, ax)
-        % RefreshLegendFor 为指定 uiaxes 重建 legend（若无 legend 且 ≥2 条线）
-            ViewUtils.RefreshLegendFor(ax, ancestor(obj.Grid_, 'figure'));
+        function onCursorSnapped(obj, e)
+        %ONCURSORSNAPPED  Forward cursor snap to Presenter for cross-axis sync.
+            if obj.SuppressSync, return; end
+            d = e.Data;
+            notify(obj, 'CursorSync', ...
+                AppEventData(struct('freq', d.x, 'sourceAxes', d.axesIdx)));
+        end
+
+        function onCursorMotion(obj)
+        %ONCURSORMOTION  Drive whichever cursor the mouse is over.
+        %   Fires CursorSync event so Presenter can synchronize the others.
+            if obj.SuppressSync, return; end
+
+            fig = ancestor(obj.Grid, 'figure');
+            if isempty(fig), return; end
+            cp = fig.CurrentPoint;
+
+            axesList  = {obj.AmpAxes, obj.PhaseAxes, obj.CorrAxes};
+            cursorList = {obj.AmpCursor, obj.PhaseCursor, obj.CorrCursor};
+
+            for i = 1:3
+                ax = axesList{i};
+                if isempty(ax) || ~isvalid(ax), continue; end
+
+                axPos = hgconvertunits(fig, ax.Position, ax.Units, 'pixels', fig);
+                px = cp(1) - axPos(1);
+                py = cp(2) - axPos(2);
+
+                if px >= 0 && px <= axPos(3) && py >= 0 && py <= axPos(4)
+                    cursor = cursorList{i};
+                    if isvalid(cursor)
+                        cursor.UpdateFromMouse(px, py);
+                    end
+                    return
+                end
+            end
+
+            % Not over any axes — hide all cursors
+            for i = 1:3
+                c = cursorList{i};
+                if isvalid(c), c.Hide(); end
+            end
+        end
+    end
+
+    methods (Access = private)
+        function deleteDataLines(~, ax)
+        %DELETEDATALINES  Remove data lines, preserve cursor objects.
+            allLines = findobj(ax, 'Type', 'line');
+            for i = 1:numel(allLines)
+                if ~strcmp(allLines(i).Tag, 'cursor')
+                    delete(allLines(i));
+                end
+            end
+            cl = findobj(ax, 'Type', 'constantline');
+            for i = 1:numel(cl), delete(cl(i)); end
+            txt = findobj(ax, 'Type', 'text');
+            for i = 1:numel(txt), delete(txt(i)); end
+        end
+
+        function refreshLegendFor(~, ax)
+        %REFRESHLEGENDFOR  Show legend only when 2+ data lines exist.
+            allLines = findobj(ax, 'Type', 'line');
+            dataMask = arrayfun(@(l) ~strcmp(l.Tag, 'cursor'), allLines);
+            if sum(dataMask) >= 2
+                legend(ax, allLines(dataMask), 'Interpreter', 'none', ...
+                    'Location', 'northeast');
+            else
+                legend(ax, 'off');
+            end
         end
     end
 end

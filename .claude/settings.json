@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat ~/.claude/settings.json 2>/dev/null | head -50)",
+      "Read(//c/Users/HUAWEI/.claude/**)",
+      "mcp__matlab__check_matlab_code",
+      "mcp__matlab__evaluate_matlab_code",
+      "mcp__matlab__run_matlab_test_file"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\HUAWEI\\.claude\\plans"
+    ]
+  }
+}

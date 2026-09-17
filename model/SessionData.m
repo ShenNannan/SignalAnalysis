@@ -339,6 +339,18 @@ classdef SessionData < handle
             notify(obj, 'DatasetsUpdated');
         end
 
+        function sr = GetSampleRate(obj, datasetIdx)
+        % GetSampleRate 读取指定数据集的采样率
+            sr = [];
+            if datasetIdx < 1 || datasetIdx > obj.DatasetCount
+                return;
+            end
+            ds = obj.Datasets_{datasetIdx};
+            if isprop(ds, 'SampleRate')
+                sr = ds.SampleRate;
+            end
+        end
+
         % ---- 通道切片 ----
 
         function SetChannelSlice(obj, axesIdx, chanIdx, startRow, endRow)

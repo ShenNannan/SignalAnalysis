@@ -5,7 +5,7 @@
 % 注意：不使用 genpath 以避免将 tests/ 等目录加入路径。
 
 thisDir = fileparts(mfilename('fullpath'));
-dirs = {'', 'app', 'view', 'presenter', 'model', 'service'};
+dirs = {'', 'app', 'view', 'view/components', 'presenter', 'model', 'service'};
 for k = 1:numel(dirs)
     addpath(fullfile(thisDir, dirs{k}));
 end

@@ -1,35 +1,37 @@
-classdef SignalAnalysisApp < handle
-% SignalAnalysisApp - 统一宿主：单窗口 + uitabgroup（时域分析/传函分析）
+﻿classdef SignalAnalysisApp < handle
+%SIGNALANALYSISAPP  V2 integration entry point.
+%   Wires TimeSeriesView (L3) + TimeSeriesPresenter (L4)
+%   into the existing tabbed application shell.
 %
-% 职责：
-%   - 创建 uifigure 与顶层 uigridlayout，实例化两个 View（依赖注入）
-%   - 持有全应用唯一状态栏（uilabel），更新回调注入 Presenter
-%   - 接管 CloseRequestFcn：显式销毁各 Presenter（触发 BasePresenter.delete
-%     清理 listener 与弹窗）后再删窗口，杜绝孤儿窗口与监听残留
+%   Usage:
+%     app = SignalAnalysisApp();
+%
+%   The TransferFunction tab still uses V1 components until its
+%   own V2 refactoring is complete.
 
     properties (SetAccess = private)
         Fig                         % uifigure
         TabGroup                    % uitabgroup
-        StatusBar                   % uilabel 底部状态栏
-        TimeSeriesView_             % TimeSeriesView
-        TransferFunctionView_       % TransferFunctionView
-        TimeSeriesPresenter_        % TimeSeriesPresenter
-        TransferFunctionPresenter_  % TransferFunctionPresenter
+        StatusBar                   % uilabel
+        TimeSeriesView              % TimeSeriesView
+        TransferFunctionView        % TransferFunctionView
+        TimeSeriesPresenter         % TimeSeriesPresenter
+        TransferFunctionPresenter   % TransferFunctionPresenter
     end
 
     properties (Access = private)
-        PendingLegendRefresh_       % logical 页签切换后待刷新 legend
+        PendingLegendRefresh logical = false
     end
 
     methods
         function obj = SignalAnalysisApp()
-            obj.Fig = uifigure( ...
-                'Name', 'Signal Analysis Toolbox', ...
-                'Position', [100 100 1200 700], ...
-                'CloseRequestFcn', @(src, evt) obj.OnClose(), ...
-                'WindowButtonMotionFcn', @(src, evt) obj.OnMouseMoved());
+        %SIGNALANALYSISAPP  Build the full application shell.
 
-            obj.PendingLegendRefresh_ = false;
+            obj.Fig = uifigure( ...
+                'Name', 'Signal Analysis Toolbox (V2)', ...
+                'Position', [100 100 1200 700], ...
+                'CloseRequestFcn', @(s,e) obj.onClose(), ...
+                'WindowButtonMotionFcn', @(s,e) obj.onMouseMoved());
 
             mainGrid = uigridlayout(obj.Fig, [2 1], ...
                 'RowHeight', {'1x', 24}, ...
@@ -39,14 +41,10 @@ classdef SignalAnalysisApp < handle
 
             obj.TabGroup = uitabgroup(mainGrid);
             obj.TabGroup.Layout.Row = 1;
+            obj.TabGroup.SelectionChangedFcn = @(s,e) obj.onTabChanged();
 
-            % 页签顺序固定：「时域分析」在前（默认选中）→ 启动直接进入时域分析
             tabTS = uitab(obj.TabGroup, 'Title', '时域分析');
             tabTF = uitab(obj.TabGroup, 'Title', '传函分析');
-
-            % 隐藏页签内的 axes 首次可见前无法正确创建 legend，
-            % 切换页签后刷新对应视图的 legend
-            obj.TabGroup.SelectionChangedFcn = @(s, e) obj.OnTabChanged();
 
             obj.StatusBar = uilabel(mainGrid, ...
                 'Text', ' ', ...
@@ -55,69 +53,71 @@ classdef SignalAnalysisApp < handle
                 'BackgroundColor', [0.94 0.94 0.94]);
             obj.StatusBar.Layout.Row = 2;
 
-            obj.TimeSeriesView_ = TimeSeriesView(tabTS);
-            obj.TransferFunctionView_ = TransferFunctionView(tabTF);
+            % ---- V2 Time-Series stack ----
+            obj.TimeSeriesView     = TimeSeriesView(tabTS);
+            obj.TimeSeriesPresenter = TimeSeriesPresenter( ...
+                obj.TimeSeriesView, SessionData(6), @obj.setStatusText);
 
-            obj.TimeSeriesPresenter_ = TimeSeriesPresenter(obj.TimeSeriesView_, @obj.SetStatusText);
-            obj.TransferFunctionPresenter_ = TransferFunctionPresenter(obj.TransferFunctionView_);
+            % ---- V2 Transfer-Function stack ----
+            obj.TransferFunctionView = TransferFunctionView(tabTF);
+            obj.TransferFunctionPresenter = TransferFunctionPresenter( ...
+                obj.TransferFunctionView, @obj.setStatusText);
 
-            SignalAnalysisApp.SettleUI();
-        end
-
-        function SetStatusText(obj, txt)
-        % SetStatusText 更新状态栏文本（回调注入 Presenter）
-            obj.StatusBar.Text = txt;
-        end
-
-    end
-
-    methods (Static, Access = private)
-        function SettleUI()
-        % SettleUI 泵渲染队列直至 uigridlayout 布局完成
-        % 部分会话中 uifigure 布局在事件循环空闲时才惰性处理，
-        % 导致窗口已显示而控件仍停留默认位置（按钮"无显示"）。
-            SETTLE_ITERATIONS = 40;   % 循环次数（经验值）
-            SETTLE_PAUSE_SEC  = 0.025; % 每次暂停秒数
-            for k = 1:SETTLE_ITERATIONS
-                drawnow;
-                pause(SETTLE_PAUSE_SEC);
-            end
+            SignalAnalysisApp.settleUI();
         end
     end
 
     methods (Access = private)
-        function OnTabChanged(obj)
-        % OnTabChanged 页签切换：可见性变化在回调返回后才传播，
-        % 置标志待首次鼠标移动时刷新 legend（隐藏页签内创建的 legend 为空）
-            obj.PendingLegendRefresh_ = true;
+
+        function setStatusText(obj, txt)
+            obj.StatusBar.Text = txt;
+        end
+
+        function onTabChanged(obj)
+            obj.PendingLegendRefresh = true;
             drawnow;
         end
 
-        function OnMouseMoved(obj)
-        % OnMouseMoved 首次鼠标移动时补刷新页签切换后的 legend
-            if ~obj.PendingLegendRefresh_
-                return;
+        function onMouseMoved(obj)
+        %ONMOUSEMOVED  Unified cursor dispatch for both tabs.
+        %   Host owns WindowButtonMotionFcn; dispatches to active view.
+            % --- Legend refresh (deferred to mouse move) ---
+            if obj.PendingLegendRefresh
+                obj.PendingLegendRefresh = false;
+                if isequal(obj.TabGroup.SelectedTab, obj.TabGroup.Children(2))
+                    obj.TransferFunctionView.RefreshLegends();
+                else
+                    obj.TimeSeriesView.RefreshLegends();
+                end
             end
-            obj.PendingLegendRefresh_ = false;
-            % Children(1)=时域分析, Children(2)=传函分析（按创建顺序）
+
+            % --- Dispatch cursor motion to active tab view ---
             if isequal(obj.TabGroup.SelectedTab, obj.TabGroup.Children(2))
-                obj.TransferFunctionView_.RefreshLegends();
+                obj.TransferFunctionView.ProcessMouseMotion();
             else
-                obj.TimeSeriesView_.RefreshLegends();
+                obj.TimeSeriesView.ProcessMouseMotion();
             end
         end
 
-        function OnClose(obj)
-        % OnClose 用户关闭窗口：先销毁 Presenter，再删窗口
-            if ~isempty(obj.TransferFunctionPresenter_)
-                delete(obj.TransferFunctionPresenter_);
-                obj.TransferFunctionPresenter_ = [];
+        function onClose(obj)
+            if ~isempty(obj.TransferFunctionPresenter)
+                delete(obj.TransferFunctionPresenter);
+                obj.TransferFunctionPresenter = [];
             end
-            if ~isempty(obj.TimeSeriesPresenter_)
-                delete(obj.TimeSeriesPresenter_);
-                obj.TimeSeriesPresenter_ = [];
+            if ~isempty(obj.TimeSeriesPresenter)
+                delete(obj.TimeSeriesPresenter);
+                obj.TimeSeriesPresenter = [];
             end
             delete(obj.Fig);
+        end
+    end
+
+    methods (Static, Access = private)
+        function settleUI()
+            for k = 1:40
+                drawnow;
+                pause(0.025);
+            end
         end
     end
 end

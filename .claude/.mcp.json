@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "matlab": {
+      "command": "C:\\Users\\HUAWEI\\.matlab\\agentic-toolkits\\bin\\matlab-mcp-core-server.exe",
+      "args": [
+        "--initial-working-folder",
+        "D:\\Project\\matlab\\TOOLS\\SignalAnalysis",
+        "--initialize-matlab-on-startup",
+        "true",
+        "--matlab-display-mode",
+        "nodesktop"
+      ]
+    }
+  }
+}

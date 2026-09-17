@@ -156,8 +156,9 @@ classdef DataReaderFactory
                         rules.vendorPrefixes = cfg.vendorPrefixes;
                     end
                 end
-            catch
-                % 静默失败，使用默认值
+            catch ME
+                warning('DataReaderFactory:ConfigLoadFailed', ...
+                    '配置文件解析失败，使用默认规则: %s', ME.message);
             end
         end
     end
@@ -376,7 +377,9 @@ classdef DataReaderFactory
                             columnNames{i} = meta.columns(i).name;
                         end
                     end
-                catch
+                catch ME
+                    warning('DataReaderFactory:MetaParseFailed', ...
+                        '元数据解析失败 %s: %s', metaPath, ME.message);
                 end
             end
 
@@ -559,7 +562,9 @@ classdef DataReaderFactory
                 try
                     meta = jsondecode(fileread(jsonPath));
                     if ~isfield(meta, 'source_file'), continue; end
-                catch
+                catch ME
+                    warning('DataReaderFactory:MetaScanFailed', ...
+                        '元数据扫描跳过 %s: %s', jsonPath, ME.message);
                     continue;
                 end
 
@@ -932,7 +937,9 @@ classdef DataReaderFactory
                 if isfield(meta, 'dataset_name') && ~isempty(meta.dataset_name)
                     name = regexprep(strtrim(meta.dataset_name), '^[▼▶]\s*', '');
                 end
-            catch
+            catch ME
+                warning('DataReaderFactory:DatasetNameReadFailed', ...
+                    '数据集名称读取失败 %s: %s', jsonPath, ME.message);
             end
         end
 
@@ -984,7 +991,9 @@ classdef DataReaderFactory
                     meta = jsondecode(fileread(jsonPath));
                     meta.(fieldName) = value;
                     DataReaderFactory.WriteJson(jsonPath, meta);
-                catch
+                catch ME
+                    warning('DataReaderFactory:MetaUpdateFailed', ...
+                        '元数据字段更新失败 %s.%s: %s', jsonPath, fieldName, ME.message);
                 end
             end
         end
@@ -1103,8 +1112,9 @@ classdef DataReaderFactory
                         bestNames = n;
                         bestTag = t;
                     end
-                catch
-                    % 解析失败，跳过
+                catch ME
+                    warning('DataReaderFactory:ParserFailed', ...
+                        '解析器跳过 %s: %s', filePath, ME.message);
                 end
             end
 
@@ -1120,7 +1130,9 @@ classdef DataReaderFactory
                         bestNames = n;
                         bestTag = 'generic_text';
                     end
-                catch
+                catch ME
+                    warning('DataReaderFactory:GenericParseFailed', ...
+                        '通用文本解析失败 %s: %s', filePath, ME.message);
                 end
             end
 
@@ -1422,7 +1434,9 @@ classdef DataReaderFactory
                     if ~isempty(names)
                         columnNames = names;
                     end
-                catch
+                catch ME
+                    warning('DataReaderFactory:HeaderParseFailed', ...
+                        '表头解析失败，使用默认列名: %s', ME.message);
                     columnNames = {};
                 end
             end

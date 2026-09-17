@@ -1,252 +1,154 @@
 classdef TimeSeriesView < handle
-% TimeSeriesView - 时域分析视图（哑终端）
-%
-% 只做控件装配、动态 uiaxes 管理（1-6 个，single/dual 布局）、渲染与事件广播，
-% 零业务逻辑。状态栏为 app 级共享（uilabel），本视图不自建。
-% 布局：左（通道 uitable + Browse/Import/Clear All）| 右（工具栏 + 动态 uiaxes 区）
+%TIMESERIESVIEW  Hollow L3 mediator for time-series analysis.
+%   Instantiates L2 components, proxies their events outward, and exposes
+%   high-level render methods called by the Presenter. Contains zero
+%   business logic and zero plot algorithms.
 
-    properties (SetAccess = private)
-        Grid_           % 顶层 uigridlayout
-        ChannelTable    % uitable（logical 勾选列 + 通道 + 数据集）
-        AxesGrid        % uigridlayout 承载动态 uiaxes
-        AxesHandles_    % cell，uiaxes handles
-        AxesCount_      % double 当前 axes 数量
-        LayoutMode_     % char 'single' | 'dual'
-        FocusedAxes_    % double 当前聚焦 axes 索引
-        SpectrumDropdown
-        NormDropdown    % uidropdown 归一化模式
-        LoadingDlg_     % uiprogressdlg
-        CursorMgr_      % struct 游标管理器 .Lines{axIdx}, .InfoLabel, .Fig
-    end
-
-    properties (Access = private)
-        ChannelRows_    % struct array：isParent/parentIdx/datasetIdx/colIdx/label/datasetName/checked
-        ExpandedSets_   % containers.Map: datasetIdx → logical（展开状态）
-        VisibleRowMap_  % 可见行号 → ChannelRows_ 索引映射
-        Highlighting_   % logical 标志：防止程序设置 Selection 时触发 OnChannelSelect
-        Rebuilding_     % logical 标志：防止 SetChannelTable 重建时触发 OnChannelSelect
-        Renaming_       % logical 标志：重命名期间禁用展开/折叠
-        RenameOriginal_ % char 重命名前的原始名称（用于判断是否变化）
-        LastClickedRow_ % double 最近左键点击的行号（供右键菜单使用）
-        MenuSetXAxis_    % uimenu handle: 设为横轴
-        MenuClearXAxis_  % uimenu handle: 恢复默认横轴
-        MenuSetRightY_   % uimenu handle: 设为右Y轴
-        MenuClearRightY_ % uimenu handle: 恢复默认Y轴
-        CurXChannel_     % 当前聚焦 axes 的横轴引用 [datasetIdx, colIdx] 或 []
-        CurRightYChannel_ % 当前聚焦 axes 的右Y轴引用 [datasetIdx, colIdx] 或 []
-        AxesXChannelMap_  % 每个 axes 的横轴引用 cell array，用于 linkaxes 分组
-    end
-
+    % ---- Outward events (consumed by Presenter) ----
     events
         BrowseClicked
         ImportButtonClicked
         ClearAllClicked
-        ChannelCheckChanged     % 载荷 struct('datasetIdx',..,'colIdx',..,'checked',..)；colIdx=0 表示整个数据集
-        AxesRemoveClicked
         ExportClicked
-        ExportExcelClicked      % 载荷 struct('datasetIdx',..)
-        SetSampleRateClicked    % 载荷 struct('datasetIdx',..)
+        ExportExcelClicked
         ClearPlotClicked
         SpectrumClicked
-        CursorMotion            % 载荷 struct('axesIdx', 'x')
-        NormClicked             % 载荷 struct('mode',..)
+        NormClicked
         CalcClicked
-        AxesClicked             % 载荷 struct('axesIdx',..,'x',..,'y',..)
-        InlineRenameChannel     % 载荷 struct('datasetIdx',..,'colIdx',..,'newName',..)
-        InlineRenameDataset     % 载荷 struct('datasetIdx',..,'newName',..)
+        AxesRemoveClicked
+        AxesClicked             % struct('axesIdx',..,'x',..,'y',..)
 
-        SliceDialogClicked      % 载荷 struct('datasetIdx',..,'colIdx',..)
-        SliceResetClicked       % 载荷 struct('datasetIdx',..,'colIdx',..)
-        SetXAxisClicked         % 载荷 struct('datasetIdx',..,'colIdx',..)
-        ClearXAxisClicked       % 载荷 struct('axesIdx',..)
-        SetRightYAxisClicked    % 载荷 struct('datasetIdx',..,'colIdx',..)
-        ClearRightYAxisClicked  % 载荷 struct('axesIdx',..)
+        % Proxied from ChannelTableComponent.ActionRequested
+        ChannelCheckChanged     % struct('datasetIdx',..,'colIdx',..,'checked',..)
+        InlineRenameDataset     % struct('datasetIdx',..,'newName',..)
+        InlineRenameChannel     % struct('datasetIdx',..,'colIdx',..,'newName',..)
+        SetSampleRateClicked    % struct('datasetIdx',..)
+        SliceDialogClicked      % struct('datasetIdx',..,'colIdx',..)
+        SliceResetClicked       % struct('datasetIdx',..,'colIdx',..)
+        SetXAxisClicked         % struct('datasetIdx',..,'colIdx',..)
+        ClearXAxisClicked       % struct('axesIdx',..)
+        SetRightYAxisClicked    % struct('datasetIdx',..,'colIdx',..)
+        ClearRightYAxisClicked  % struct('axesIdx',..)
+
+        % Proxied from CursorComponent.CursorSnapped
+        CursorMotion            % struct('axesIdx',..,'x',..,'y',..,'lineTag',..,'xDataIdx',..)
+    end
+
+    % ---- L2 Component handles (SetAccess = private for safety) ----
+    properties (SetAccess = private)
+        Grid                % top-level uigridlayout
+        GridMgr             % AxesGridComponent
+        TableComp           % ChannelTableComponent
+        CursorMap           % containers.Map axesIdx → CursorComponent
+        FocusedAxes         double = 1
+    end
+
+    properties (Access = private)
+        % Toolbar handles (for external read if needed)
+        SpectrumDropdown
+        NormDropdown
+        Toaster             % AsyncToaster (RAII, auto-closes)
+        AxesXChannelMap     % cell: per-axes X-channel ref (for linkaxes grouping)
     end
 
     methods
+        % ================================================================
+        %  Construction
+        % ================================================================
         function obj = TimeSeriesView(parent)
-            obj.Grid_ = uigridlayout(parent, [1 2], ...
+        %TIMESERIESVIEW  Build the full layout and instantiate L2 components.
+
+            obj.AxesXChannelMap = {};
+            obj.CursorMap = containers.Map('KeyType', 'double', ...
+                                           'ValueType', 'any');
+
+            % ---- Top grid: left panel | right panel ----
+            obj.Grid = uigridlayout(parent, [1 2], ...
                 'ColumnWidth', {'22x', '78x'}, ...
                 'Padding', [6 6 6 6], ...
                 'ColumnSpacing', 6);
 
-            obj.AxesHandles_ = {};
-            obj.AxesCount_ = 0;
-            obj.LayoutMode_ = 'single';
-            obj.FocusedAxes_ = 1;
-            obj.ChannelRows_ = struct([]);
-            obj.ExpandedSets_ = containers.Map('KeyType', 'double', 'ValueType', 'logical');
-            obj.VisibleRowMap_ = [];
-            obj.Highlighting_ = false;
-            obj.Rebuilding_ = false;
-            obj.Renaming_ = false;
-            obj.RenameOriginal_ = '';
-            obj.LastClickedRow_ = 0;
-            obj.LoadingDlg_ = [];
-            obj.CurXChannel_ = [];
-            obj.CurRightYChannel_ = [];
-            obj.AxesXChannelMap_ = {};
+            % ---- Left: table + buttons ----
+            left = uigridlayout(obj.Grid, [2 1], ...
+                'RowHeight', {'1x', 36}, ...
+                'RowSpacing', 4, ...
+                'Padding', [2 2 2 2]);
+            left.Layout.Column = 1;
 
-            obj.BuildChannelPanel();
-            obj.BuildPlotPanel();
-            obj.AddAxesInternal();
+            obj.TableComp = ChannelTableComponent(left);
+            obj.TableComp.GetTableHandle().Layout.Row = 1;
+
+            obj.buildLeftButtons(left);
+
+            % ---- Right: toolbar + axes grid ----
+            right = uigridlayout(obj.Grid, [2 1], ...
+                'RowHeight', {36, '1x'}, ...
+                'RowSpacing', 4);
+            right.Layout.Column = 2;
+
+            obj.buildToolbar(right);
+
+            % AxesGridComponent lives in the bottom-right cell
+            axesParent = uigridlayout(right, [1 1], ...
+                'RowHeight', {'1x'}, 'ColumnWidth', {'1x'}, ...
+                'RowSpacing', 4, 'ColumnSpacing', 4, ...
+                'Padding', 0);
+            axesParent.Layout.Row = 2;
+
+            obj.GridMgr = AxesGridComponent(axesParent, 'MaxAxes', 6);
+
+            % ---- Wire L2 events ----
+            obj.wireComponentEvents();
+
+            % ---- Seed one default axes ----
+            obj.GridMgr.AddAxes();
+
+            % ---- Register global mouse motion for cursors ----
+
         end
 
-        % ---- 通道表 ----
-
-        function SetChannelTable(obj, rows)
-        % SetChannelTable 填充通道表（折叠/展开模式）
-        % rows 字段：isParent, parentIdx, datasetIdx, colIdx, label, datasetName, checked
-        % 默认折叠：只显示数据集名行；点击展开显示通道
-            obj.ChannelRows_ = rows;
-            n = numel(rows);
-
-            % 同步展开状态：新数据集默认折叠
-            allDs = unique(arrayfun(@(r) r.datasetIdx, rows));
-            for k = 1:numel(allDs)
-                if ~obj.ExpandedSets_.isKey(allDs(k))
-                    obj.ExpandedSets_(allDs(k)) = false;
-                end
-            end
-
-            % 构建可见行
-            checked = {};
-            names = {};
-            visMap = [];
-            for i = 1:n
-                r = rows(i);
-                if r.isParent
-                    checked{end+1} = r.checked; %#ok<AGROW>
-                    dsIdx = r.datasetIdx;
-                    names{end+1} = r.label; %#ok<AGROW>
-                    visMap(end+1) = i; %#ok<AGROW>
-                else
-                    pIdx = r.parentIdx;
-                    if pIdx > 0 && rows(pIdx).isParent
-                        dsIdx = rows(pIdx).datasetIdx;
-                        if obj.ExpandedSets_.isKey(dsIdx) && obj.ExpandedSets_(dsIdx)
-                            checked{end+1} = r.checked; %#ok<AGROW>
-                            names{end+1} = ['    ' r.label]; %#ok<AGROW>
-                            visMap(end+1) = i; %#ok<AGROW>
-                        end
-                    end
-                end
-            end
-            obj.VisibleRowMap_ = visMap;
-
-            obj.Rebuilding_ = true;
-            if isempty(checked)
-                obj.ChannelTable.Data = table(logical([]), cell(0,1), ...
-                    'VariableNames', {'选择', '数据集'});
-            else
-                obj.ChannelTable.Data = table([checked{:}]', names(:), ...
-                    'VariableNames', {'选择', '数据集'});
-            end
-            obj.Rebuilding_ = false;
-        end
-
-        % ---- axes 管理 ----
-
-        function count = GetAxesCount(obj)
-            count = obj.AxesCount_;
-        end
-
-        function ax = GetAxes(obj, axesIdx)
-            if axesIdx >= 1 && axesIdx <= numel(obj.AxesHandles_)
-                ax = obj.AxesHandles_{axesIdx};
-            else
-                ax = [];
-            end
-        end
-
-        function idx = GetFocusedAxes(obj)
-            idx = obj.FocusedAxes_;
-        end
-
-        function SetLayout(obj, mode)
-        % SetLayout 切换布局 'single' | 'dual'
-            if ~any(strcmpi(mode, {'single', 'dual'}))
-                return;
-            end
-            obj.LayoutMode_ = lower(mode);
-            obj.RelayoutGrid();
-        end
-
-        function ClearAxes(obj, axesIdx)
-            ax = obj.GetAxes(axesIdx);
-            if ~isempty(ax) && isvalid(ax)
-                savedFcn = ax.ButtonDownFcn;
-                % cla('reset') 彻底清除 axes 内容 + linkaxes 残留状态
-                yyaxis(ax, 'left');
-                cla(ax, 'reset');
-                grid(ax, 'on');
-                ax.ButtonDownFcn = savedFcn;
-                ax.XLimMode = 'auto';
-                ax.YLimMode = 'auto';
-            end
-        end
-
-        function ClearAllAxes(obj)
-            for i = 1:obj.AxesCount_
-                obj.ClearAxes(i);
-            end
-            obj.AxesXChannelMap_ = {};
-            obj.CurXChannel_ = [];
-            obj.CurRightYChannel_ = [];
-        end
-
-        % ---- 渲染接口 ----
+        % ================================================================
+        %  High-level render API (called by Presenter)
+        % ================================================================
 
         function RenderWaveform(obj, axesIdx, xCell, yCell, labels, colors, rightYData)
-        % RenderWaveform 在指定 axes 叠画多条通道（支持双Y轴）
-        % rightYData: [] 无右Y，或 struct('x',..,'y',..,'label',..,'color',..)
-            if nargin < 7
-                rightYData = [];
-            end
+        %RENDERWAVEFORM  Draw multiple channels onto a single axes.
+        %   Supports dual-Y via rightYData (struct or []).
+        %   Uses findobj-based cleanup to preserve CursorComponent handles.
+
+            if nargin < 7, rightYData = []; end
+
             ax = obj.GetAxes(axesIdx);
-            if isempty(ax) || ~isvalid(ax)
-                return;
-            end
+            if isempty(ax) || ~isvalid(ax), return; end
 
-            hasRightY = isstruct(rightYData) && isfield(rightYData, 'x') && ~isempty(rightYData.x);
+            hasRightY = isstruct(rightYData) && isfield(rightYData, 'x') ...
+                && ~isempty(rightYData.x);
 
-            % 保存交互属性
             savedButtonDownFcn = ax.ButtonDownFcn;
 
-            % 暂时隐藏 axes，避免 cla→plot 中间帧闪烁
-            ax.Visible = 'off';
-
-            % 手动清除两条 Y 轴（不用 cla('reset') 避免 R2025b 重建双Y结构）
-            yyaxis(ax, 'right');
-            cla(ax);
+            % --- Targeted cleanup: delete data lines only, preserve cursors ---
+            obj.deleteDataLines(ax);
+            legend(ax, 'off');
             ax.YAxis(2).Visible = 'off';
-            yyaxis(ax, 'left');
-            cla(ax);
 
-            % 恢复交互属性
-            ax.ButtonDownFcn = savedButtonDownFcn;
-            ax.LineStyleOrder = '-';
+            ax.ButtonDownFcn   = savedButtonDownFcn;
+            ax.LineStyleOrder  = '-';
             ax.LineStyleOrderIndex = 1;
             ax.ColorOrderIndex = 1;
-
-            % 重置限制模式：linkaxes 在空 axes 上锁定 XLim=[0,1]，
-            % cla 不会重置 XLimMode，必须显式恢复为 auto
             ax.XLimMode = 'auto';
             ax.YLimMode = 'auto';
 
             if hasRightY
-                % ---- 双Y模式：用 yyaxis ----
                 ax.YAxis(2).Visible = 'on';
                 yyaxis(ax, 'left');
                 hold(ax, 'on');
-                allLines = gobjects(0);
                 for c = 1:numel(yCell)
-                    [~, shortLabel] = strtok(labels{c}, '/');
-                    if isempty(shortLabel), displayName = labels{c};
-                    else, displayName = strtrim(shortLabel(2:end)); end
-                    h = plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'LineWidth', 1, 'LineStyle', '-', 'DisplayName', displayName, 'Tag', 'leftY');
-                    h.ButtonDownFcn = @(s, e) obj.OnAxesButtonDown(axesIdx, e);
-                    allLines(end+1) = h;
+                    displayName = DataPreparationService.ShortLabel(labels{c});
+                    h = plot(ax, xCell{c}, yCell{c}, ...
+                        'Color', colors{c}, 'LineWidth', 1, ...
+                        'LineStyle', '-', 'DisplayName', displayName, ...
+                        'Tag', 'leftY');
+                    h.ButtonDownFcn = @(s,e) obj.onAxesButtonDown(axesIdx, e);
                 end
                 hold(ax, 'off');
 
@@ -254,849 +156,246 @@ classdef TimeSeriesView < handle
                 hold(ax, 'on');
                 for c = 1:numel(rightYData.x)
                     h = plot(ax, rightYData.x{c}, rightYData.y{c}, ...
-                        'Color', rightYData.colors{c}, 'LineWidth', 1, 'LineStyle', '--', ...
-                        'DisplayName', rightYData.labels{c}, 'Tag', 'rightY');
-                    h.ButtonDownFcn = @(s, e) obj.OnAxesButtonDown(axesIdx, e);
-                    allLines(end+1) = h;
+                        'Color', rightYData.colors{c}, 'LineWidth', 1, ...
+                        'LineStyle', '--', 'DisplayName', rightYData.labels{c}, ...
+                        'Tag', 'rightY');
+                    h.ButtonDownFcn = @(s,e) obj.onAxesButtonDown(axesIdx, e);
                 end
                 hold(ax, 'off');
-
-                yyaxis(ax, 'left');  % 固定活动侧
-            else
-                % ---- 普通模式 ----
-                % 显式隐藏右 Y 轴（避免残留旧的双Y结构）
-                yyaxis(ax, 'right');
-                cla(ax);
-                ax.YAxis(2).Visible = 'off';
                 yyaxis(ax, 'left');
-                cla(ax);
+            else
+                yyaxis(ax, 'left');
                 hold(ax, 'on');
-                allLines = gobjects(0);
                 for c = 1:numel(yCell)
-                    [~, shortLabel] = strtok(labels{c}, '/');
-                    if isempty(shortLabel), displayName = labels{c};
-                    else, displayName = strtrim(shortLabel(2:end)); end
-                    h = plot(ax, xCell{c}, yCell{c}, 'Color', colors{c}, 'LineWidth', 1, 'LineStyle', '-', 'DisplayName', displayName);
-                    h.ButtonDownFcn = @(s, e) obj.OnAxesButtonDown(axesIdx, e);
-                    allLines(end+1) = h;
+                    displayName = DataPreparationService.ShortLabel(labels{c});
+                    h = plot(ax, xCell{c}, yCell{c}, ...
+                        'Color', colors{c}, 'LineWidth', 1, ...
+                        'LineStyle', '-', 'DisplayName', displayName, ...
+                        'Tag', 'leftY');
+                    h.ButtonDownFcn = @(s,e) obj.onAxesButtonDown(axesIdx, e);
                 end
                 hold(ax, 'off');
             end
 
             grid(ax, 'on');
-
-            if ~isempty(allLines)
-                legend(ax, allLines, 'Interpreter', 'none', 'Location', 'northwest');
-            else
-                legend(ax, 'off');
-            end
-
-            % 重建游标（必须在所有 cla/plot 完成之后）
-            obj.RebuildCursorObjects(ax, axesIdx);
-
-            % 渲染完成，恢复可见
-            ax.Visible = 'on';
+            obj.refreshLegend(ax);
         end
 
-        function RefreshLegends(obj)
-        % RefreshLegends 为全部 axes 重建 legend（页签切换可见后由 app 调用）
-            obj.CleanupBrokenLegends();
-            for i = 1:obj.AxesCount_
-                obj.RefreshLegendFor(obj.AxesHandles_{i});
+        function ClearAxes(obj, axesIdx)
+        %CLEARAXES  Clear data lines from a single axes (preserves cursors).
+            ax = obj.GetAxes(axesIdx);
+            if isempty(ax) || ~isvalid(ax), return; end
+            obj.deleteDataLines(ax);
+            legend(ax, 'off');
+            ax.YAxis(2).Visible = 'off';
+            yyaxis(ax, 'left');
+            grid(ax, 'on');
+        end
+
+        function ClearAllAxes(obj)
+        %CLEARALLAXES  Clear all axes.
+            for i = 1:obj.GridMgr.Count
+                obj.ClearAxes(i);
             end
+        end
+
+        % ================================================================
+        %  Axes state management (called by Presenter)
+        % ================================================================
+
+        function hAx = GetAxes(obj, axesIdx)
+        %GETAXES  Return the uiaxes handle at the given index.
+            hAx = obj.GridMgr.GetAxes(axesIdx);
+        end
+
+        function [xl, ylL, ylR] = GetAxesLimits(obj, axesIdx)
+        %GETAXESLIMITS  Return axis limits without exposing the handle.
+        %   xl   - [xmin xmax]
+        %   ylL  - [ymin ymax] left Y
+        %   ylR  - [ymin ymax] right Y (empty if not visible)
+            hAx = obj.GridMgr.GetAxes(axesIdx);
+            xl  = xlim(hAx);
+            ylL = ylim(hAx);   % left Y (active side by default)
+            ylR = [];
+            if hAx.YAxis(2).Visible
+                yyaxis(hAx, 'right');
+                ylR = ylim(hAx);
+                yyaxis(hAx, 'left');
+            end
+        end
+
+        function n = AxesCount(obj)
+        %AXESCOUNT  Return the current number of axes.
+            n = obj.GridMgr.Count;
         end
 
         function UpdateAxisChannelState(obj, axIdx, xDsIdx, xColIdx, rightYList)
-        % UpdateAxisChannelState 更新当前 axes 的横轴/右Y轴引用（供 Presenter 调用）
-        %   rightYList: cell array of [datasetIdx, colIdx]，支持多个右Y通道
+        %UPDATEAXISCHANNELSTATE  Cache X/rightY refs for linkaxes grouping.
+        %   rightYList: cell of [datasetIdx, colIdx]
+            while numel(obj.AxesXChannelMap) < axIdx
+                obj.AxesXChannelMap{end+1} = [];
+            end
             if ~isempty(xDsIdx)
-                obj.CurXChannel_ = [xDsIdx, xColIdx];
+                obj.AxesXChannelMap{axIdx} = [xDsIdx, xColIdx];
             else
-                obj.CurXChannel_ = [];
+                obj.AxesXChannelMap{axIdx} = [];
             end
-            obj.CurRightYChannel_ = rightYList;  % cell array of [dsIdx, colIdx]
-            % 更新每轴 X 通道映射（用于 linkaxes 分组）
-            while length(obj.AxesXChannelMap_) < axIdx
-                obj.AxesXChannelMap_{end+1} = [];
-            end
-            obj.AxesXChannelMap_{axIdx} = obj.CurXChannel_;
+            % Forward state to table component for menu rule evaluation
+            obj.TableComp.UpdateXChannel(xDsIdx, xColIdx);
+            obj.TableComp.UpdateRightY(rightYList);
         end
 
+        function SetChannelTable(obj, rows)
+        %SETCHANNELTABLE  Forward row data to the table component.
+            obj.TableComp.SetRows(rows);
+        end
+
+        % ================================================================
+        %  Cursor management (called by Presenter)
+        % ================================================================
+
+        function HideCursor(obj)
+        %HIDECURSOR  Hide all cursors across all axes.
+            keys = obj.CursorMap.keys;
+            for k = 1:numel(keys)
+                c = obj.CursorMap(keys{k});
+                if isvalid(c), c.Hide(); end
+            end
+        end
+
+        function SetCursorLabelFormatter(obj, axesIdx, fcn)
+        %SETCURSORLABELFORMATTER  Set the label formatter for a cursor.
+            if obj.CursorMap.isKey(axesIdx)
+                obj.CursorMap(axesIdx).LabelFormatterFcn = fcn;
+            end
+        end
+
+        % ================================================================
+        %  Loading / Error / Info dialogs
+        % ================================================================
+
         function ShowLoading(obj, msg)
-        % ShowLoading 显示阻断式加载弹窗
+        %SHOWLOADING  Show a blocking progress dialog (RAII).
             if nargin < 2, msg = '处理中...'; end
-            obj.LoadingDlg_ = uiprogressdlg(ancestor(obj.Grid_, 'figure'), ...
-                'Title', '请稍候', 'Message', msg, 'Indeterminate', 'on');
-            drawnow;
+            fig = ancestor(obj.Grid, 'figure');
+            obj.Toaster = AsyncToaster(fig, '请稍候', msg);
+            drawnow limitrate;   % 确保弹窗在重计算前刷新到屏幕
+        end
+
+        function UpdateLoading(obj, msg, fraction)
+        %UPDATELOADING  Update the progress dialog message / fraction.
+            if ~isempty(obj.Toaster) && isvalid(obj.Toaster)
+                if nargin < 3
+                    obj.Toaster.Update(msg);
+                else
+                    obj.Toaster.Update(msg, fraction);
+                end
+            end
         end
 
         function CloseLoading(obj)
-        % CloseLoading 关闭加载弹窗
-            if ~isempty(obj.LoadingDlg_) && isvalid(obj.LoadingDlg_)
-                close(obj.LoadingDlg_);
-            end
-            obj.LoadingDlg_ = [];
+        %CLOSELOADING  Close the progress dialog (also auto-closes on delete).
+            obj.Toaster = [];  % delete triggers RAII close
         end
 
         function ShowError(obj, msg)
-            ViewUtils.ShowError(obj, msg);
+        %SHOWERROR  Show an error alert dialog.
+            fig = ancestor(obj.Grid, 'figure');
+            uialert(fig, msg, '错误', 'Icon', 'error');
         end
 
         function ShowInfo(obj, msg)
-            uialert(ancestor(obj.Grid_, 'figure'), msg, '提示', 'Icon', 'success');
+        %SHOWINFO  Show an info alert dialog.
+            fig = ancestor(obj.Grid, 'figure');
+            uialert(fig, msg, '提示', 'Icon', 'success');
         end
 
-        % ---- 同步游标卡尺 ----
+        % ================================================================
+        %  Axes accessors (L3 — read-only, no class-name leakage)
+        % ================================================================
 
-        function mgr = InitCursorManager(obj, infoLabel)
-        % InitCursorManager 创建同步游标 xline + 交点 Marker + 悬浮文本
-            lineOpts = {'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
-                        'LineStyle', '-', 'HitTest', 'off', ...
-                        'PickableParts', 'none', 'Visible', 'off'};
-            markerOpts = {'Marker', 'o', 'MarkerSize', 6, ...
-                          'MarkerFaceColor', [0.85 0.32 0.09], ...
-                          'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
-                          'HitTest', 'off', 'PickableParts', 'none', ...
-                          'Tag', 'cursor', 'Visible', 'off'};
-            txtOpts = {'BackgroundColor', [1 1 1 0.85], 'EdgeColor', [0.5 0.5 0.5], ...
-                       'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
-                       'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
-                       'Interpreter', 'none', 'Visible', 'off'};
-            lines = cell(1, obj.AxesCount_);
-            markers = cell(1, obj.AxesCount_);
-            hoverTexts = cell(1, obj.AxesCount_);
-            for i = 1:obj.AxesCount_
-                lines{i} = xline(obj.AxesHandles_{i}, 0, lineOpts{:});
-                markers{i} = line(obj.AxesHandles_{i}, NaN, NaN, markerOpts{:});
-                hoverTexts{i} = text(obj.AxesHandles_{i}, 0, 0, '', txtOpts{:});
-            end
-            if nargin < 2 || isempty(infoLabel)
-                mgr = struct('Lines', {lines}, 'Markers', {markers}, 'HoverTexts', {hoverTexts});
-            else
-                mgr = struct('Lines', {lines}, 'Markers', {markers}, 'HoverTexts', {hoverTexts}, 'InfoLabel', infoLabel);
-            end
-            obj.CursorMgr_ = mgr;
+        function n = GetAxesCount(obj)
+        %GETAXESCOUNT  Number of active axes in the grid.
+            n = obj.GridMgr.Count;
         end
 
-        function UpdateCursorPosition(obj, axesIdx, xVal, groupAxes)
-        % UpdateCursorPosition 更新游标位置，仅显示同组 axes
-            if isempty(obj.CursorMgr_), return; end
-            lines = obj.CursorMgr_.Lines;
-            for i = 1:numel(lines)
-                if ~isgraphics(lines{i}), continue; end
-                if ismember(i, groupAxes)
-                    lines{i}.Value = xVal;
-                    lines{i}.Visible = 'on';
-                else
-                    lines{i}.Visible = 'off';
-                end
+        function hAx = GetAxesHandle(obj, idx)
+        %GETAXESHANDLE  Return uiaxes handle at given index.
+            hAx = obj.GridMgr.GetAxes(idx);
+        end
+
+        function idx = GetFocusedAxes(obj)
+        %GETFOCUSEDAXES  Last-clicked axes index (1-based).
+            idx = obj.FocusedAxes;
+        end
+
+        % ================================================================
+        %  Macro-level dialog helpers (L3, no business logic)
+        % ================================================================
+
+        function result = ShowSliceRangeDialog(~, colName, totalRows, currentStart, currentLen)
+        %SHOWSLICERANGEDIALOG  Ask user for slice range. Returns [start, len] or [].
+            prompt = {sprintf('通道 %s（共 %d 行）\n起始行:', colName, totalRows), ...
+                      '切片长度:'};
+            dlgTitle = '设置切片范围';
+            defaults = {num2str(currentStart), num2str(currentLen)};
+            answer = inputdlg(prompt, dlgTitle, [1 40], defaults);
+            if isempty(answer) || any(cellfun(@isempty, answer))
+                result = []; return
+            end
+            result = [str2double(answer{1}), str2double(answer{2})];
+            if any(isnan(result))
+                result = [];
             end
         end
 
-        function UpdateCursorMarkers(obj, markerData)
-        % UpdateCursorMarkers 更新交点吸附 Marker + 悬浮文本
-        % markerData: struct array with fields: axIdx, x, y, hoverText
-            if isempty(obj.CursorMgr_) || ~isfield(obj.CursorMgr_, 'Markers'), return; end
-            markers = obj.CursorMgr_.Markers;
-            hoverTexts = obj.CursorMgr_.HoverTexts;
-            % 先隐藏所有
-            for i = 1:numel(markers)
-                if isgraphics(markers{i}), markers{i}.Visible = 'off'; end
-                if isgraphics(hoverTexts{i}), hoverTexts{i}.Visible = 'off'; end
-            end
-            % 更新有数据的
-            for m = 1:numel(markerData)
-                md = markerData(m);
-                axIdx = md.axIdx;
-                if axIdx < 1 || axIdx > numel(markers), continue; end
-                if isnan(md.y), continue; end
-                if ~isgraphics(markers{axIdx}), continue; end
-                set(markers{axIdx}, 'XData', md.x, 'YData', md.y, 'Visible', 'on');
-                xl = xlim(obj.AxesHandles_{axIdx});
-                yl = ylim(obj.AxesHandles_{axIdx});
-                xOffset = 0.015 * (xl(2) - xl(1));
-                yOffset = 0.015 * (yl(2) - yl(1));
-                if ~isgraphics(hoverTexts{axIdx}), continue; end
-                set(hoverTexts{axIdx}, 'Position', [md.x + xOffset, md.y + yOffset], ...
-                    'String', md.hoverText, 'Visible', 'on');
+        % ShowSampleRateDialog — moved below with two-output signature
+
+        function SetNormValue(obj, normMode)
+        %SETNORMVALUE  Update the Norm dropdown to reflect session state.
+            modeMap = containers.Map( ...
+                {'none','minmax','zscore','meanzero'}, ...
+                {'None','Min-Max','Z-Score','Mean Zero'});
+            if modeMap.isKey(normMode)
+                obj.NormDropdown.Value = modeMap(normMode);
             end
         end
 
-        function HideCursor(obj)
-        % HideCursor 隐藏所有游标线、Marker 和悬浮文本
-            if isempty(obj.CursorMgr_), return; end
-            lines = obj.CursorMgr_.Lines;
-            for i = 1:numel(lines)
-                if ~isgraphics(lines{i}), continue; end
-                lines{i}.Visible = 'off';
-            end
-            if isfield(obj.CursorMgr_, 'Markers')
-                markers = obj.CursorMgr_.Markers;
-                for i = 1:numel(markers)
-                    if isgraphics(markers{i}), markers{i}.Visible = 'off'; end
-                end
-            end
-            if isfield(obj.CursorMgr_, 'HoverTexts')
-                hts = obj.CursorMgr_.HoverTexts;
-                for i = 1:numel(hts)
-                    if isgraphics(hts{i}), hts{i}.Visible = 'off'; end
-                end
-            end
-            if isfield(obj.CursorMgr_, 'InfoLabel') && ~isempty(obj.CursorMgr_.InfoLabel)
-                obj.CursorMgr_.InfoLabel.Text = '游标: --';
+        % ================================================================
+        %  File dialog helpers (L3, no business logic)
+        % ================================================================
+
+        function [file, path] = ShowSaveDialog(~, filter, title, defaultName)
+        %SHOWSAVEDIALOG  Native file-save dialog. Returns (file, path) or (0, 0).
+            [file, path] = uiputfile(filter, title, defaultName);
+        end
+
+        function [answer, ok] = ShowSampleRateDialog(~, dsName, defaultVal)
+        %SHOWSAMPLERATEDIALOG  Prompt for sample rate via inputdlg.
+            if nargin < 3, defaultVal = ''; end
+            if isnumeric(defaultVal), defaultVal = num2str(defaultVal); end
+            answer = []; ok = false;
+            dlg = inputdlg({sprintf('数据集:%s\n采样率 (Hz):', dsName)}, ...
+                '设置采样率', [1 40], {defaultVal});
+            if isempty(dlg), return; end
+            v = str2double(dlg{1});
+            if ~isnan(v) && v > 0
+                answer = v; ok = true;
             end
         end
 
-        function RegisterCursorMotionFcn(obj)
-        % RegisterCursorMotionFcn 注册全局鼠标移动回调（保留已有回调）
-            fig = ancestor(obj.Grid_, 'figure');
-            if isempty(fig), return; end
-            oldFcn = fig.WindowButtonMotionFcn;
-            fig.WindowButtonMotionFcn = @(s, e) obj.onCursorMotionWrapper(oldFcn);
-        end
-    end
-
-    methods (Access = private)
-        function BuildChannelPanel(obj)
-            left = uigridlayout(obj.Grid_, [2 1], ...
-                'RowHeight', {'1x', 30}, ...
-                'RowSpacing', 4);
-            left.Layout.Column = 1;
-
-            obj.ChannelTable = uitable(left, ...
-                'ColumnName', {'选择', '数据集'}, ...
-                'ColumnEditable', [true false], ...
-                'ColumnWidth', {38, '1x'}, ...
-                'SelectionHighlight', 'on');
-            obj.ChannelTable.Layout.Row = 1;
-            obj.ChannelTable.Data = table(false(0, 1), cell(0, 1), ...
-                'VariableNames', {'选择', '数据集'});
-            obj.ChannelTable.CellEditCallback = @(s, e) obj.OnChannelEdit(e);
-            obj.ChannelTable.CellSelectionCallback = @(s, e) obj.OnChannelSelect(e);
-
-            cm = uicontextmenu(ancestor(left, 'figure'));
-            uimenu(cm, 'Text', '重命名', ...
-                'MenuSelectedFcn', @(s, e) obj.OnContextRename());
-            uimenu(cm, 'Text', '设置采样频率...', ...
-                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('setSampleRate'));
-            uimenu(cm, 'Text', '导出 Excel', ...
-                'MenuSelectedFcn', @(s, e) obj.OnContextAction('exportExcel'));
-            uimenu(cm, 'Text', '设置切片范围...', 'Separator', 'on', ...
-                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('slice'));
-            uimenu(cm, 'Text', '切片重置', ...
-                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('sliceReset'));
-            obj.MenuSetXAxis_ = uimenu(cm, 'Text', '设为横轴', 'Separator', 'on', ...
-                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('setXAxis'));
-            obj.MenuClearXAxis_ = uimenu(cm, 'Text', '恢复默认横轴', ...
-                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('clearXAxis'), ...
-                'Enable', 'off');
-            obj.MenuSetRightY_ = uimenu(cm, 'Text', '设为右 Y 轴', ...
-                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('setRightY'));
-            obj.MenuClearRightY_ = uimenu(cm, 'Text', '恢复默认 Y 轴', ...
-                'MenuSelectedFcn', @(s, e) obj.OnContextChannelAction('clearRightY'), ...
-                'Enable', 'off');
-            obj.ChannelTable.ContextMenu = cm;
-            cm.ContextMenuOpeningFcn = @(s, e) obj.OnContextMenuOpening();
-
-            btns = uigridlayout(left, [1 3], ...
-                'ColumnWidth', {'1x', '1x', '1x'}, ...
-                'ColumnSpacing', 4, ...
-                'Padding', [2 2 2 2]);
-            btns.Layout.Row = 2;
-            uibutton(btns, 'push', 'Text', 'Browse...', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'BrowseClicked'));
-            uibutton(btns, 'push', 'Text', 'Import', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'ImportButtonClicked'));
-            uibutton(btns, 'push', 'Text', 'Clear All', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'ClearAllClicked'));
+        function mode = GetSpectrumMode(obj)
+        %GETSPECTRUMMODE  Read the spectrum dropdown value ('FFT' or 'PSD').
+            mode = obj.SpectrumDropdown.Value;
         end
 
-        function BuildPlotPanel(obj)
-            right = uigridlayout(obj.Grid_, [2 1], ...
-                'RowHeight', {36, '1x'}, ...
-                'RowSpacing', 4);
-            right.Layout.Column = 2;
+        % ================================================================
+        %  Popup factory methods (L3: UI creation, no business logic)
+        % ================================================================
 
-            obj.BuildToolbar(right);
-
-            obj.AxesGrid = uigridlayout(right, [1 1], ...
-                'RowHeight', {'1x'}, ...
-                'ColumnWidth', {'1x'}, ...
-                'RowSpacing', 4, ...
-                'ColumnSpacing', 4);
-            obj.AxesGrid.Layout.Row = 2;
-        end
-
-        function BuildToolbar(obj, parent)
-            sq = 28;  % 小方按钮边长
-            tb = uigridlayout(parent, [1 12], ...
-                'ColumnWidth', {sq, sq, sq, sq, 60, 48, '1x', 80, 44, 90, 44, 44}, ...
-                'RowHeight', {sq}, ...
-                'ColumnSpacing', 4, ...
-                'Padding', [4 4 4 4]);
-            tb.Layout.Row = 1;
-
-            % --- 左侧：axes 布局 + 图形操作（等间距排列）---
-            uibutton(tb, 'push', 'Text', '+', 'FontWeight', 'bold', ...
-                'FontSize', 14, ...
-                'ButtonPushedFcn', @(s, e) obj.OnAddAxesClicked());
-            uibutton(tb, 'push', 'Text', char(8722), 'FontSize', 14, ...
-                'ButtonPushedFcn', @(s, e) obj.OnRemoveAxesClicked());
-            uibutton(tb, 'push', 'Text', '||', ...
-                'ButtonPushedFcn', @(s, e) obj.OnLayoutClicked('single'));
-            uibutton(tb, 'push', 'Text', '=', ...
-                'ButtonPushedFcn', @(s, e) obj.OnLayoutClicked('dual'));
-            uibutton(tb, 'push', 'Text', 'Export', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'ExportClicked'));
-            uibutton(tb, 'push', 'Text', 'Clear', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'ClearPlotClicked'));
-            % 弹性间隔（推挤右侧数据操作按钮右对齐）
-            uipanel(tb, 'Visible', 'off', 'BorderType', 'none');
-            % --- 右侧：数据操作（以 Calc 为右起点）---
-            obj.SpectrumDropdown = uidropdown(tb, ...
-                'Items', {'FFT', 'PSD'}, ...
-                'Value', 'FFT', 'Tooltip', '选择频谱分析模式');
-            uibutton(tb, 'push', 'Text', '频谱', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'SpectrumClicked'));
-            obj.NormDropdown = uidropdown(tb, ...
-                'Items', {'None', 'Min-Max', 'Z-Score', 'Mean Zero'}, ...
-                'Value', 'None');
-            uibutton(tb, 'push', 'Text', 'Norm', ...
-                'ButtonPushedFcn', @(s, e) obj.OnNormClicked());
-            uibutton(tb, 'push', 'Text', 'Calc', ...
-                'ButtonPushedFcn', @(s, e) notify(obj, 'CalcClicked'));
-        end
-
-        % ---- axes 内部管理 ----
-
-        function OnAddAxesClicked(obj)
-            if obj.AxesCount_ >= 6
-                obj.ShowError('最多支持 6 个 axes');
-                return;
-            end
-            obj.AddAxesInternal();
-        end
-
-        function AddAxesInternal(obj)
-            if obj.AxesCount_ >= 6
-                return;
-            end
-            obj.AxesCount_ = obj.AxesCount_ + 1;
-            ax = uiaxes(obj.AxesGrid);
-            % 确保只有左 Y 轴（R2025b uiaxes 默认带双Y）
-            yyaxis(ax, 'right');
-            cla(ax);
-            ax.YAxis(2).Visible = 'off';
-            yyaxis(ax, 'left');
-            cla(ax);
-            grid(ax, 'on');
-            idx = obj.AxesCount_;
-            ax.ButtonDownFcn = @(s, e) obj.OnAxesButtonDown(idx, e);
-            obj.AxesHandles_{end+1} = ax;
-            % 配置交互：滚轮缩放 + 框选放大
-            ax.Interactions = [zoomInteraction, regionZoomInteraction];
-            % 为新 axes 添加游标线和锚点标记
-            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines')
-                obj.CursorMgr_.Lines{end+1} = xline(ax, 0, ...
-                    'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
-                    'LineStyle', '-', 'HitTest', 'off', ...
-                    'PickableParts', 'none', 'Visible', 'off');
-            end
-            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Markers')
-                obj.CursorMgr_.Markers{end+1} = line(ax, NaN, NaN, ...
-                    'Marker', 'o', 'MarkerSize', 6, ...
-                    'MarkerFaceColor', [0.85 0.32 0.09], ...
-                    'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
-                    'HitTest', 'off', 'PickableParts', 'none', ...
-                    'Tag', 'cursor', 'Visible', 'off');
-            end
-            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'HoverTexts')
-                obj.CursorMgr_.HoverTexts{end+1} = text(ax, 0, 0, '', ...
-                    'BackgroundColor', [1 1 1 0.85], 'EdgeColor', [0.5 0.5 0.5], ...
-                    'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
-                    'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
-                    'Interpreter', 'none', 'Visible', 'off');
-            end
-            obj.RelayoutGrid();
-            obj.LinkXAxes();
-        end
-
-        function OnRemoveAxesClicked(obj)
-            if obj.AxesCount_ <= 1
-                obj.ShowError('至少保留 1 个 axes');
-                return;
-            end
-            obj.AxesCount_ = obj.AxesCount_ - 1;
-            delete(obj.AxesHandles_{end});
-            obj.AxesHandles_(end) = [];
-            if ~isempty(obj.AxesXChannelMap_) && length(obj.AxesXChannelMap_) >= obj.AxesCount_ + 1
-                obj.AxesXChannelMap_(end) = [];
-            end
-            % 移除对应的游标线和锚点标记
-            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Lines') ...
-                    && numel(obj.CursorMgr_.Lines) > obj.AxesCount_
-                obj.CursorMgr_.Lines(end) = [];
-            end
-            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'Markers') ...
-                    && numel(obj.CursorMgr_.Markers) > obj.AxesCount_
-                obj.CursorMgr_.Markers(end) = [];
-            end
-            if ~isempty(obj.CursorMgr_) && isfield(obj.CursorMgr_, 'HoverTexts') ...
-                    && numel(obj.CursorMgr_.HoverTexts) > obj.AxesCount_
-                obj.CursorMgr_.HoverTexts(end) = [];
-            end
-            obj.FocusedAxes_ = min(obj.FocusedAxes_, obj.AxesCount_);
-            obj.RelayoutGrid();
-            obj.LinkXAxes();
-            notify(obj, 'AxesRemoveClicked');
-        end
-
-        function OnLayoutClicked(obj, mode)
-            if strcmpi(obj.LayoutMode_, mode)
-                return;
-            end
-            obj.SetLayout(mode);
-        end
-
-        function RelayoutGrid(obj)
-            n = obj.AxesCount_;
-            if n == 0
-                return;
-            end
-            if strcmp(obj.LayoutMode_, 'dual')
-                nCols = 2;
-            else
-                nCols = 1;
-            end
-            nRows = ceil(n / nCols);
-            set(obj.AxesGrid, ...
-                'RowHeight', repmat({'1x'}, 1, nRows), ...
-                'ColumnWidth', repmat({'1x'}, 1, nCols));
-            for i = 1:n
-                col = mod(i - 1, nCols) + 1;
-                row = ceil(i / nCols);
-                obj.AxesHandles_{i}.Layout.Row = row;
-                obj.AxesHandles_{i}.Layout.Column = col;
-                if row == nRows
-                    xlabel(obj.AxesHandles_{i}, 'Sample Index');
-                else
-                    xlabel(obj.AxesHandles_{i}, '');
-                end
-            end
-        end
-
-        function LinkXAxes(obj)
-        % LinkXAxes 按横轴引用分组链接 axes
-        %   相同自定义横轴的 axes 互相链接，默认横轴的 axes 也互相链接
-        %   不同自定义横轴的 axes 互不干扰
-            % 先清除所有旧链接
-            for i = 1:numel(obj.AxesHandles_)
-                a = obj.AxesHandles_{i};
-                if ~isempty(a) && isvalid(a)
-                    linkaxes(a, 'off');
-                end
-            end
-            % 收集有效 axes 及其 X 通道引用
-            validHandles = {};
-            validXRef = {};
-            for i = 1:numel(obj.AxesHandles_)
-                a = obj.AxesHandles_{i};
-                if ~isempty(a) && isvalid(a)
-                    validHandles{end+1} = a;
-                    if i <= length(obj.AxesXChannelMap_) && ~isempty(obj.AxesXChannelMap_{i})
-                        validXRef{end+1} = obj.AxesXChannelMap_{i};
-                    else
-                        validXRef{end+1} = [];
-                    end
-                end
-            end
-            if numel(validHandles) < 2
-                return;
-            end
-            % 按横轴引用分组：默认横轴归入 '__default__' 组，互相链接
-            groups = containers.Map('KeyType', 'char', 'ValueType', 'any');
-            for i = 1:numel(validHandles)
-                ref = validXRef{i};
-                if isempty(ref)
-                    key = '__default__';
-                else
-                    key = sprintf('%d_%d', ref(1), ref(2));
-                end
-                if groups.isKey(key)
-                    groups(key) = [groups(key), validHandles(i)];
-                else
-                    groups(key) = validHandles(i);
-                end
-            end
-            % 每组内链接
-            keys = groups.keys();
-            for k = 1:numel(keys)
-                grp = groups(keys{k});
-                if numel(grp) >= 2
-                    linkaxes([grp{:}], 'x');
-                end
-            end
-        end
-
-        function OnAxesButtonDown(obj, axesIdx, e)
-            obj.FocusedAxes_ = axesIdx;
-            obj.UpdateAxesHighlight();
-            % Shift 拦截：Shift+左键是框选放大，不触发点击事件
-            fig = ancestor(obj.Grid_, 'figure');
-            if ~isempty(fig) && ismember('shift', fig.CurrentModifier)
-                return;
-            end
-            x = NaN;
-            y = NaN;
-            selType = 'normal';
-            if ~isempty(fig)
-                selType = fig.SelectionType;
-            end
-            if ~isempty(e) && isprop(e, 'IntersectionPoint')
-                x = e.IntersectionPoint(1);
-                y = e.IntersectionPoint(2);
-            end
-            notify(obj, 'AxesClicked', AppEventData(struct(...
-                'axesIdx', axesIdx, 'x', x, 'y', y, 'selectionType', selType)));
-        end
-
-        function UpdateAxesHighlight(obj)
-            for i = 1:obj.AxesCount_
-                ax = obj.AxesHandles_{i};
-                if i == obj.FocusedAxes_
-                    ax.Box = 'on';
-                    ax.LineWidth = 1.5;
-                else
-                    ax.Box = 'off';
-                    ax.LineWidth = 0.5;
-                end
-            end
-        end
-
-        % ---- 通道表回调 ----
-
-        function OnChannelEdit(obj, e)
-        % OnChannelEdit 单元格编辑：列1=复选框，列2=通道名（仅子行）
-            if obj.Rebuilding_, return; end
-            visRow = e.Indices(1);
-            col = e.Indices(2);
-            if visRow < 1 || visRow > numel(obj.VisibleRowMap_)
-                return;
-            end
-            internalIdx = obj.VisibleRowMap_(visRow);
-            r = obj.ChannelRows_(internalIdx);
-
-            if col == 2
-                % 列2编辑仅在重命名模式下有效
-                if ~obj.Renaming_
-                    return;
-                end
-                obj.Renaming_ = false;
-                obj.ChannelTable.ColumnEditable(2) = false;
-                newName = strtrim(obj.ChannelTable.Data{visRow, 2});
-                % 名称无变化或为空 → 视为取消，恢复原名
-                if isempty(newName) || strcmp(newName, obj.RenameOriginal_)
-                    obj.Rebuilding_ = true;
-                    obj.ChannelTable.Data{visRow, 2} = r.label;
-                    obj.Rebuilding_ = false;
-                    return;
-                end
-                if r.isParent
-                    notify(obj, 'InlineRenameDataset', AppEventData(struct(...
-                        'datasetIdx', r.datasetIdx, 'newName', newName)));
-                else
-                    notify(obj, 'InlineRenameChannel', AppEventData(struct(...
-                        'datasetIdx', r.datasetIdx, 'colIdx', r.colIdx, 'newName', newName)));
-                end
-                return;
-            end
-
-            % 列1：复选框勾选（View 只广播事件，Presenter 处理级联逻辑）
-            val = logical(obj.ChannelTable.Data{visRow, 1});
-            if r.isParent
-                notify(obj, 'ChannelCheckChanged', ...
-                    AppEventData(struct('datasetIdx', r.datasetIdx, 'colIdx', 0, 'checked', val)));
-            else
-                notify(obj, 'ChannelCheckChanged', ...
-                    AppEventData(struct('datasetIdx', r.datasetIdx, 'colIdx', r.colIdx, 'checked', val)));
-            end
-        end
-
-        function OnChannelSelect(obj, e)
-        % OnChannelSelect 点击行展开/折叠（只负责数据集展开，不改变勾选状态）
-            if obj.Highlighting_ || obj.Rebuilding_
-                return;
-            end
-            % 确保选中行有视觉高亮
-            if ~isempty(e.Indices)
-                obj.ChannelTable.Selection = [e.Indices(1), 1; e.Indices(1), 2];
-            end
-            % 重命名期间点击其他行 → 结束重命名（CellEditCallback 会处理）
-            if obj.Renaming_
-                obj.Renaming_ = false;
-                obj.ChannelTable.ColumnEditable(2) = false;
-                return;
-            end
-            if isempty(e.Indices)
-                return;
-            end
-            visRow = e.Indices(1);
-            obj.LastClickedRow_ = visRow;
-            if visRow < 1 || visRow > numel(obj.VisibleRowMap_)
-                return;
-            end
-            internalIdx = obj.VisibleRowMap_(visRow);
-            r = obj.ChannelRows_(internalIdx);
-            if ~r.isParent
-                return;
-            end
-            dsIdx = r.datasetIdx;
-            if obj.ExpandedSets_.isKey(dsIdx)
-                obj.ExpandedSets_(dsIdx) = ~obj.ExpandedSets_(dsIdx);
-            else
-                obj.ExpandedSets_(dsIdx) = true;
-            end
-            obj.SetChannelTable(obj.ChannelRows_);
-            % 重建后重选该行：保持高亮供右键使用，且下次点击同一行选择变化可再次触发回调
-            obj.Highlighting_ = true;
-            obj.ChannelTable.Selection = [visRow, 1; visRow, 2];
-            obj.Highlighting_ = false;
-        end
-
-        function OnContextMenuOpening(obj)
-        % OnContextMenuOpening 右键时自动选中最近左键点击的行，并更新菜单可用性
-            if obj.LastClickedRow_ >= 1 && obj.LastClickedRow_ <= size(obj.ChannelTable.Data, 1)
-                obj.Highlighting_ = true;
-                obj.ChannelTable.Selection = [obj.LastClickedRow_, 1; obj.LastClickedRow_, 2];
-                obj.Highlighting_ = false;
-            end
-
-            % 判断选中行类型，更新横轴/右Y轴菜单可用性
-            isChannel = false;
-            dsIdx = 0; chIdx = 0;
-            if ~isempty(obj.VisibleRowMap_) && obj.LastClickedRow_ >= 1 ...
-                    && obj.LastClickedRow_ <= numel(obj.VisibleRowMap_)
-                ci = obj.VisibleRowMap_(obj.LastClickedRow_);
-                r = obj.ChannelRows_(ci);
-                isChannel = ~r.isParent;
-                if isChannel
-                    dsIdx = r.datasetIdx;
-                    chIdx = r.colIdx;
-                end
-            end
-
-            isXChannel = isChannel && ~isempty(obj.CurXChannel_) ...
-                && obj.CurXChannel_(1) == dsIdx && obj.CurXChannel_(2) == chIdx;
-            % 检查是否在右Y列表中
-            isRightY = false;
-            if isChannel && ~isempty(obj.CurRightYChannel_)
-                for ri = 1:length(obj.CurRightYChannel_)
-                    if obj.CurRightYChannel_{ri}(1) == dsIdx && obj.CurRightYChannel_{ri}(2) == chIdx
-                        isRightY = true;
-                        break;
-                    end
-                end
-            end
-
-            obj.SetMenuEnable(obj.MenuSetXAxis_, isChannel && ~isXChannel);
-            obj.SetMenuEnable(obj.MenuClearXAxis_, isChannel && isXChannel);
-            obj.SetMenuEnable(obj.MenuSetRightY_, isChannel && ~isRightY && ~isXChannel);
-            obj.SetMenuEnable(obj.MenuClearRightY_, isChannel && isRightY);
-            % 采样频率：仅数据集行可用；切片：仅通道行可用
-            cm = obj.ChannelTable.ContextMenu;
-            for mi = 1:numel(cm.Children)
-                item = cm.Children(mi);
-                if strcmp(item.Text, '设置采样频率...')
-                    obj.SetMenuEnable(item, ~isChannel);
-                elseif strcmp(item.Text, '设置切片范围...') || ...
-                       strcmp(item.Text, '切片重置')
-                    obj.SetMenuEnable(item, isChannel);
-                end
-            end
-        end
-
-        function OnContextRename(obj)
-        % OnContextRename 右键重命名：选中名称列 + 焦点转移
-        %   用户按 Enter/F2/双击 即可进入编辑模式（文字全选+光标）
-            if isempty(obj.VisibleRowMap_)
-                return;
-            end
-            visRow = obj.LastClickedRow_;
-            if visRow < 1 || visRow > numel(obj.VisibleRowMap_)
-                return;
-            end
-            internalIdx = obj.VisibleRowMap_(visRow);
-            r = obj.ChannelRows_(internalIdx);
-            obj.RenameOriginal_ = r.label;
-            obj.Renaming_ = true;
-            obj.ChannelTable.ColumnEditable(2) = true;
-            obj.ChannelTable.Selection = [visRow, 2];
-            focus(obj.ChannelTable);
-        end
-
-        function OnContextAction(obj, action)
-            if isempty(obj.VisibleRowMap_)
-                return;
-            end
-            visRow = obj.LastClickedRow_;
-            if visRow < 1 || visRow > numel(obj.VisibleRowMap_)
-                return;
-            end
-            ci = obj.VisibleRowMap_(visRow);
-            r = obj.ChannelRows_(ci);
-            switch action
-                case 'exportExcel'
-                    if r.isParent
-                        notify(obj, 'ExportExcelClicked', AppEventData(struct('datasetIdx', r.datasetIdx)));
-                    end
-            end
-        end
-
-        function OnContextChannelAction(obj, action)
-            visRow = obj.GetContextRow();
-            if isempty(visRow)
-                return;
-            end
-            internalIdx = obj.VisibleRowMap_(visRow);
-            r = obj.ChannelRows_(internalIdx);
-            % 采样频率：数据集级别操作
-            if r.isParent
-                if strcmp(action, 'setSampleRate')
-                    notify(obj, 'SetSampleRateClicked', AppEventData(struct('datasetIdx', r.datasetIdx)));
-                end
-                return;
-            end
-            payload = AppEventData(struct('datasetIdx', r.datasetIdx, 'colIdx', r.colIdx));
-            switch action
-                case 'slice'
-                    notify(obj, 'SliceDialogClicked', payload);
-                case 'sliceReset'
-                    notify(obj, 'SliceResetClicked', payload);
-                case 'setSampleRate'
-                    notify(obj, 'SetSampleRateClicked', payload);
-                case 'setXAxis'
-                    notify(obj, 'SetXAxisClicked', payload);
-                case 'clearXAxis'
-                    notify(obj, 'ClearXAxisClicked', AppEventData(struct('axesIdx', obj.GetFocusedAxes())));
-                case 'setRightY'
-                    notify(obj, 'SetRightYAxisClicked', payload);
-                case 'clearRightY'
-                    notify(obj, 'ClearRightYAxisClicked', AppEventData(struct('axesIdx', obj.GetFocusedAxes())));
-            end
-        end
-
-        function row = GetContextRow(obj)
-        % GetContextRow 右键命中的可见表格行号（用 LastClickedRow_ 避免 Selection 被重置）
-            row = [];
-            if isempty(obj.VisibleRowMap_)
-                return;
-            end
-            row = obj.LastClickedRow_;
-            if row < 1 || row > numel(obj.VisibleRowMap_)
-                row = [];
-            end
-        end
-
-        function OnNormClicked(obj)
-            items = obj.NormDropdown.Items;
-            modes = {'none', 'minmax', 'zscore', 'meanzero'};
-            idx = find(strcmp(obj.NormDropdown.Value, items), 1);
-            if isempty(idx) || idx > numel(modes)
-                return;
-            end
-            notify(obj, 'NormClicked', AppEventData(struct('mode', modes{idx})));
-        end
-
-        function CleanupBrokenLegends(obj)
-        % CleanupBrokenLegends 删除空条目 legend（隐藏页签内创建产生的工件）
-            ViewUtils.CleanupBrokenLegends(ancestor(obj.Grid_, 'figure'));
-        end
-
-        function RebuildCursorObjects(obj, ax, axesIdx)
-        % RebuildCursorObjects 在 axes 上重建游标线、吸附 Marker 和悬浮文本
-        %   cla / cla('reset') 会删除这些对象，调用此方法统一重建
-            if isempty(obj.CursorMgr_)
-                return;
-            end
-            % 确保字段存在
-            if ~isfield(obj.CursorMgr_, 'Lines')
-                obj.CursorMgr_.Lines = {};
-            end
-            if ~isfield(obj.CursorMgr_, 'Markers')
-                obj.CursorMgr_.Markers = {};
-            end
-            if ~isfield(obj.CursorMgr_, 'HoverTexts')
-                obj.CursorMgr_.HoverTexts = {};
-            end
-            % 确保数组足够大
-            while numel(obj.CursorMgr_.Lines) < axesIdx
-                obj.CursorMgr_.Lines{end+1} = [];
-            end
-            while numel(obj.CursorMgr_.Markers) < axesIdx
-                obj.CursorMgr_.Markers{end+1} = [];
-            end
-            while numel(obj.CursorMgr_.HoverTexts) < axesIdx
-                obj.CursorMgr_.HoverTexts{end+1} = [];
-            end
-            % 重建游标线
-            h1 = xline(ax, 0, ...
-                'Color', [0.85 0.32 0.09], 'LineWidth', 1.2, ...
-                'LineStyle', '-', 'HitTest', 'off', ...
-                'PickableParts', 'none', 'Visible', 'off', ...
-                'HandleVisibility', 'off');
-            obj.CursorMgr_.Lines{axesIdx} = h1;
-            % 重建吸附 Marker
-            % YLimInclude/XLimInclude='off'：marker 不参与坐标轴范围计算，
-            % 避免双Y模式下大范围数据的 snapY 拉伸小范围坐标轴
-            h2 = line(ax, NaN, NaN, ...
-                'Marker', 'o', 'MarkerSize', 6, ...
-                'MarkerFaceColor', [0.85 0.32 0.09], ...
-                'MarkerEdgeColor', 'w', 'LineStyle', 'none', ...
-                'HitTest', 'off', 'PickableParts', 'none', ...
-                'Tag', 'cursor', 'Visible', 'off', ...
-                'HandleVisibility', 'off', ...
-                'YLimInclude', 'off', 'XLimInclude', 'off');
-            obj.CursorMgr_.Markers{axesIdx} = h2;
-            % 重建悬浮文本
-            h3 = text(ax, 0, 0, '', ...
-                'BackgroundColor', [1 1 1 0.85], 'EdgeColor', [0.5 0.5 0.5], ...
-                'Margin', 4, 'FontSize', 9, 'HitTest', 'off', ...
-                'PickableParts', 'none', 'VerticalAlignment', 'bottom', ...
-                'Interpreter', 'none', 'Visible', 'off', ...
-                'HandleVisibility', 'off', ...
-                'XLimInclude', 'off', 'YLimInclude', 'off');
-            obj.CursorMgr_.HoverTexts{axesIdx} = h3;
-            % 验证创建成功
-            if ~isgraphics(h1) || ~isgraphics(h2) || ~isgraphics(h3)
-                warning('RebuildCursorObjects: failed to create cursor objects');
-            end
-        end
-
-        function SetMenuEnable(~, menuItem, enabled)
-        % SetMenuEnable 设置菜单项可用性
-            if isvalid(menuItem)
-                if enabled
-                    menuItem.Enable = 'on';
-                else
-                    menuItem.Enable = 'off';
-                end
-            end
-        end
-
-        function RefreshLegendFor(obj, ax)
-        % RefreshLegendFor 为指定 uiaxes 重建 legend（若无 legend 且 ≥2 条线）
-            ViewUtils.RefreshLegendFor(ax, ancestor(obj.Grid_, 'figure'));
-        end
-    end
-
-    methods
-        % ---- 弹窗工厂（Presenter 调用，View 负责 UI 创建） ----
-
-        function h = CreateSpectrumPopup(obj)
-        % CreateSpectrumPopup 创建频谱分析弹窗骨架
-        %
-        % 输出 h：struct，含 fig / axTime / axFreq / modeDropdown
-        % Presenter 负责注册生命周期和填充数据
+        function h = CreateSpectrumPopup(~)
+        %CREATESPECTRUMPOPUP  Create FFT/PSD popup skeleton.
+        %   Returns struct(fig, axTime, axFreq). Presenter fills data.
 
             fig = uifigure('Name', 'Spectrum Analysis', ...
                 'NumberTitle', 'off', 'Position', [200 150 900 720]);
@@ -1106,23 +405,20 @@ classdef TimeSeriesView < handle
 
             axTime = uiaxes(g);
             yyaxis(axTime, 'right'); cla(axTime); axTime.YAxis(2).Visible = 'off';
-            yyaxis(axTime, 'left'); cla(axTime);
+            yyaxis(axTime, 'left');  cla(axTime);
             axTime.Layout.Row = 1;
+
             axFreq = uiaxes(g);
             yyaxis(axFreq, 'right'); cla(axFreq); axFreq.YAxis(2).Visible = 'off';
-            yyaxis(axFreq, 'left'); cla(axFreq);
+            yyaxis(axFreq, 'left');  cla(axFreq);
             axFreq.Layout.Row = 2;
 
             h = struct('fig', fig, 'axTime', axTime, 'axFreq', axFreq);
         end
 
-        function h = CreateCalcDialog(obj, channelList)
-        % CreateCalcDialog 创建通道运算对话框骨架
-        %
-        % 输入：
-        %   channelList - cell 通道名称列表
-        %
-        % 输出 h：struct，含全部 UI 句柄，Presenter 负责回调和数据填充
+        function h = CreateCalcDialog(~, channelList)
+        %CREATECALCDIALOG  Create channel-operation dialog skeleton.
+        %   Returns struct with all UI handles. Presenter wires callbacks.
 
             opTypes = {'A + B', 'A - B', 'A × B', 'A ÷ B', ...
                        'diff(A)', 'cumsum(A)', '|A|', 'A²', '√A', ...
@@ -1161,7 +457,7 @@ classdef TimeSeriesView < handle
             btnGrid = uigridlayout(g, [1 2], 'ColumnWidth', {'1x', '1x'}, ...
                 'ColumnSpacing', 8, 'RowHeight', {28}, 'Padding', [0 0 0 0]);
             btnGrid.Layout.Column = [1 2];
-            btnOk = uibutton(btnGrid, 'push', 'Text', '确定');
+            btnOk     = uibutton(btnGrid, 'push', 'Text', '确定');
             btnCancel = uibutton(btnGrid, 'push', 'Text', '取消');
 
             h = struct('fig', fig, ...
@@ -1173,101 +469,307 @@ classdef TimeSeriesView < handle
                        'btnOk', btnOk, 'btnCancel', btnCancel);
         end
 
-        function result = ShowSampleRateDialog(~, dsName, defaultVal)
-        % ShowSampleRateDialog 弹窗输入采样率（inputdlg 原生模态）
-        %
-        % 输入：
-        %   dsName     - 数据集名称
-        %   defaultVal - 默认值（数字或字符串）
-        %
-        % 输出：
-        %   result - 用户输入的采样率数值，取消返回 []
-
-            if nargin < 3, defaultVal = ''; end
-            result = [];
-            if isnumeric(defaultVal), defaultVal = num2str(defaultVal); end
-
-            answer = inputdlg({sprintf('数据集:%s\n采样率 (Hz):', dsName)}, ...
-                '设置采样率', [1 40], {defaultVal});
-            if isempty(answer), return; end
-
-            v = str2double(answer{1});
-            if ~isnan(v) && v > 0
-                result = v;
-            else
-                errordlg('采样率必须为正数', '输入错误');
-            end
+        function fig = CreateExportFigure(~, name)
+        %CREATEEXPORTFIGURE  Create a legacy figure for export.
+            fig = figure('Name', name, 'NumberTitle', 'off');
         end
 
-        function result = ShowSliceRangeDialog(~, colName, totalRows, defaultStart, defaultLen)
-        % ShowSliceRangeDialog 弹窗输入切片范围（inputdlg 原生模态）
-        %
-        % 输出：
-        %   result - [start, len] 或 []
+        % ================================================================
+        %  Legend utilities
+        % ================================================================
 
-            result = [];
-            prompt = {sprintf('通道:%s  (共 %d 行)\n起点行号:', colName, totalRows), '长度:'};
-            answer = inputdlg(prompt, '设置切片范围', [1 40; 1 40], ...
-                {num2str(defaultStart), num2str(defaultLen)});
-            if isempty(answer), return; end
-
-            s = round(str2double(answer{1}));
-            l = round(str2double(answer{2}));
-            if ~isnan(s) && ~isnan(l) && s >= 1 && l >= 1
-                result = [s, l];
-            else
-                errordlg('起点 ≥1, 长度 ≥1', '输入错误');
+        function RefreshLegends(obj)
+        %REFRESHLEGENDS  Rebuild legends for all axes.
+            for i = 1:obj.GridMgr.Count
+                ax = obj.GridMgr.GetAxes(i);
+                if ~isempty(ax) && isvalid(ax)
+                    obj.refreshLegend(ax);
+                end
             end
         end
+    end
 
-        function h = CreateExportFigure(obj, name)
-        % CreateExportFigure 创建导出用 figure（非 uifigure）
-        %
-        % 输出 h：figure 句柄，Presenter 负责 subplot/plot 内容
-
-            h = figure('Name', name, 'NumberTitle', 'off');
-        end
-
-        % ---- 游标鼠标回调 ----
-
-        function onCursorMotionWrapper(obj, oldFcn)
-        % onCursorMotionWrapper 保留旧回调 + 游标移动
-            if ~isempty(oldFcn)
-                try oldFcn(); catch, end
-            end
+    % ================================================================
+    %  Public: Host-dispatched cursor motion
+    % ================================================================
+    methods
+        function ProcessMouseMotion(obj)
+        %PROCESSMOUSEMOTION  Called by Host layer to drive cursor.
             obj.onCursorMotion();
+        end
+    end
+
+    % ================================================================
+    %  Private: construction helpers
+    % ================================================================
+    methods (Access = private)
+
+        function buildLeftButtons(obj, parent)
+            btns = uigridlayout(parent, [1 3], ...
+                'ColumnWidth', {'1x', '1x', '1x'}, ...
+                'ColumnSpacing', 4, 'Padding', [2 2 2 2]);
+            btns.Layout.Row = 2;
+            uibutton(btns, 'push', 'Text', 'Browse...', ...
+                'ButtonPushedFcn', @(s,e) notify(obj, 'BrowseClicked'));
+            uibutton(btns, 'push', 'Text', 'Import', ...
+                'ButtonPushedFcn', @(s,e) notify(obj, 'ImportButtonClicked'));
+            uibutton(btns, 'push', 'Text', 'Clear All', ...
+                'ButtonPushedFcn', @(s,e) notify(obj, 'ClearAllClicked'));
+        end
+
+        function buildToolbar(obj, parent)
+            sq = 28;
+            tb = uigridlayout(parent, [1 12], ...
+                'ColumnWidth', {sq, sq, sq, sq, 60, 48, '1x', 80, 44, 90, 44, 44}, ...
+                'RowHeight', {sq}, 'ColumnSpacing', 4, 'Padding', [4 4 4 4]);
+            tb.Layout.Row = 1;
+
+            uibutton(tb, 'push', 'Text', '+', 'FontWeight', 'bold', 'FontSize', 14, ...
+                'ButtonPushedFcn', @(s,e) obj.onAddAxes());
+            uibutton(tb, 'push', 'Text', char(8722), 'FontSize', 14, ...
+                'ButtonPushedFcn', @(s,e) obj.onRemoveAxes());
+            uibutton(tb, 'push', 'Text', '||', ...
+                'ButtonPushedFcn', @(s,e) notify(obj, 'AxesClicked', ...
+                    AppEventData(struct('action','layout','mode','single'))));
+            uibutton(tb, 'push', 'Text', '=', ...
+                'ButtonPushedFcn', @(s,e) notify(obj, 'AxesClicked', ...
+                    AppEventData(struct('action','layout','mode','dual'))));
+            uibutton(tb, 'push', 'Text', 'Export', ...
+                'ButtonPushedFcn', @(s,e) notify(obj, 'ExportClicked'));
+            uibutton(tb, 'push', 'Text', 'Clear', ...
+                'ButtonPushedFcn', @(s,e) notify(obj, 'ClearPlotClicked'));
+
+            uipanel(tb, 'Visible', 'off', 'BorderType', 'none');  % spacer
+
+            obj.SpectrumDropdown = uidropdown(tb, ...
+                'Items', {'FFT', 'PSD'}, 'Value', 'FFT', ...
+                'Tooltip', '选择频谱分析模式');
+            uibutton(tb, 'push', 'Text', '频谱', ...
+                'ButtonPushedFcn', @(s,e) notify(obj, 'SpectrumClicked'));
+            obj.NormDropdown = uidropdown(tb, ...
+                'Items', {'None', 'Min-Max', 'Z-Score', 'Mean Zero'}, ...
+                'Value', 'None');
+            uibutton(tb, 'push', 'Text', 'Norm', ...
+                'ButtonPushedFcn', @(s,e) obj.onNormClicked());
+            uibutton(tb, 'push', 'Text', 'Calc', ...
+                'ButtonPushedFcn', @(s,e) notify(obj, 'CalcClicked'));
+        end
+
+        % ================================================================
+        %  Private: L2 event wiring
+        % ================================================================
+
+        function wireComponentEvents(obj)
+        %WIRECOMPONENTEVENTS  Connect L2 component events to this mediator.
+
+            % --- AxesGrid events ---
+            addlistener(obj.GridMgr, 'AxesAdded',   @(s,e) obj.onAxesAdded(e));
+            addlistener(obj.GridMgr, 'AxesRemoved', @(s,e) obj.onAxesRemoved(e));
+
+            % --- ChannelTable events (generic action bus) ---
+            addlistener(obj.TableComp, 'ActionRequested', ...
+                @(s,e) obj.onTableAction(e));
+        end
+
+        % ================================================================
+        %  Private: L2 event handlers
+        % ================================================================
+
+        function onAxesAdded(obj, e)
+        %ONAXESADDED  Create a CursorComponent for the new axes.
+            d   = e.Data;
+            hAx = d.handle;
+            idx = d.axesIdx;
+
+            % Configure new axes
+            yyaxis(hAx, 'right'); cla(hAx);
+            hAx.YAxis(2).Visible = 'off';
+            yyaxis(hAx, 'left');  cla(hAx);
+            grid(hAx, 'on');
+            hAx.Interactions = [zoomInteraction, regionZoomInteraction];
+
+            % Attach cursor (L2 component, no data dependency)
+            cursor = CursorComponent(hAx, idx);
+            obj.CursorMap(idx) = cursor;
+
+            % Proxy cursor event → View-level CursorMotion
+            addlistener(cursor, 'CursorSnapped', ...
+                @(s,e) notify(obj, 'CursorMotion', e));
+
+            % Axes click → focus tracking
+            hAx.ButtonDownFcn = @(s,e) obj.onAxesButtonDown(idx, e);
+
+            obj.FocusedAxes = min(obj.FocusedAxes, idx);
+        end
+
+        function onAxesRemoved(obj, e)
+        %ONAXESREMOVED  Destroy the cursor for the removed axes.
+            idx = e.Data.axesIdx;
+
+            % Remove cursor component
+            if obj.CursorMap.isKey(idx)
+                obj.CursorMap.remove(idx);
+            end
+
+            % Re-key remaining cursors (shift indices down)
+            oldKeys = sort(cell2mat(obj.CursorMap.keys));
+            newMap  = containers.Map('KeyType', 'double', 'ValueType', 'any');
+            newIdx  = 0;
+            for k = oldKeys
+                newIdx = newIdx + 1;
+                c = obj.CursorMap(k);
+                c.SetAxesIdx(newIdx);   % keep event payload consistent
+                newMap(newIdx) = c;
+            end
+            obj.CursorMap = newMap;
+
+            obj.FocusedAxes = min(obj.FocusedAxes, obj.GridMgr.Count);
+            notify(obj, 'AxesRemoveClicked');
+        end
+
+        function onTableAction(obj, e)
+        %ONTABLEACTION  Route ChannelTableComponent events to specific View events.
+            d      = e.Data;
+            action = d.action;
+
+            switch action
+                case 'checkChanged'
+                    notify(obj, 'ChannelCheckChanged', e);
+                case 'renameDataset'
+                    notify(obj, 'InlineRenameDataset', e);
+                case 'renameChannel'
+                    notify(obj, 'InlineRenameChannel', e);
+                case 'setSampleRate'
+                    notify(obj, 'SetSampleRateClicked', e);
+                case 'slice'
+                    notify(obj, 'SliceDialogClicked', e);
+                case 'sliceReset'
+                    notify(obj, 'SliceResetClicked', e);
+                case 'exportExcel'
+                    notify(obj, 'ExportExcelClicked', e);
+                case 'setXAxis'
+                    notify(obj, 'SetXAxisClicked', e);
+                case 'clearXAxis'
+                    % Inject current focused axes index
+                    d.axesIdx = obj.FocusedAxes;
+                    notify(obj, 'ClearXAxisClicked', AppEventData(d));
+                case 'setRightY'
+                    notify(obj, 'SetRightYAxisClicked', e);
+                case 'clearRightY'
+                    d.axesIdx = obj.FocusedAxes;
+                    notify(obj, 'ClearRightYAxisClicked', AppEventData(d));
+            end
+        end
+
+        function onAxesButtonDown(obj, axesIdx, ~)
+        %ONAXESBUTTONDOWN  Track which axes is focused.
+            obj.FocusedAxes = axesIdx;
+        end
+
+        function onAddAxes(obj)
+            obj.GridMgr.AddAxes();
+        end
+
+        function onRemoveAxes(obj)
+            n = obj.GridMgr.Count;
+            if n <= 1, return; end
+            obj.GridMgr.RemoveAxes(n);
+        end
+
+        function onNormClicked(obj)
+            mode = obj.NormDropdown.Value;
+            notify(obj, 'NormClicked', AppEventData(struct('mode', mode)));
+        end
+
+        % ================================================================
+        %  Private: cursor motion driver
+        % ================================================================
+
+        function registerCursorMotion(obj)
+        %REGISTERCURSORMOTION  Install figure-level mouse motion callback.
+            fig = ancestor(obj.Grid, 'figure');
+            if isempty(fig), return; end
+            fig.WindowButtonMotionFcn = @(s,e) obj.onCursorMotion();
         end
 
         function onCursorMotion(obj)
-        % onCursorMotion 全局鼠标移动：像素坐标命中测试 + drawnow limitrate 节流
-        % 用 fig.CurrentPoint + axes.Position（像素）判断鼠标在哪个 axes 上，
-        % 不依赖 ax.CurrentPoint + 数据边界（放大后会误判）
-            if isempty(obj.CursorMgr_), return; end
-            if ~isfield(obj.CursorMgr_, 'Lines') || isempty(obj.CursorMgr_.Lines), return; end
+        %ONCURSORMOTION  Route mouse position to the CursorComponent
+        %   of whichever axes the pointer is currently over.
+            fig = ancestor(obj.Grid, 'figure');
+            if isempty(fig), return; end
 
-            fig = ancestor(obj.Grid_, 'figure');
-            if isempty(fig) || ~isvalid(fig), return; end
-            figPt = fig.CurrentPoint;  % 像素坐标 [x, y]（左下角原点）
+            % Get mouse position in figure pixels
+            cp = fig.CurrentPoint;   % [x, y] in figure pixels
 
-            for i = 1:obj.AxesCount_
-                ax = obj.AxesHandles_{i};
-                if ~isvalid(ax), continue; end
-                % 获取 axes 像素矩形（需要先切到 pixels 单位）
-                oldUnits = ax.Units;
-                ax.Units = 'pixels';
-                pos = ax.Position;  % [left, bottom, width, height]
-                ax.Units = oldUnits;
-                % 像素命中测试
-                if figPt(1) >= pos(1) && figPt(1) <= pos(1)+pos(3) && ...
-                   figPt(2) >= pos(2) && figPt(2) <= pos(2)+pos(4)
-                    cp = ax.CurrentPoint;
-                    notify(obj, 'CursorMotion', ...
-                        AppEventData(struct('axesIdx', i, 'x', cp(1,1), 'mouseY', cp(1,2))));
-                    drawnow limitrate;
-                    return;
+            for i = 1:obj.GridMgr.Count
+                ax = obj.GridMgr.GetAxes(i);
+                if isempty(ax) || ~isvalid(ax), continue; end
+
+                % Convert to figure-pixel coordinates for reliable hit-testing
+                axPos = hgconvertunits(fig, ax.Position, ax.Units, 'pixels', fig);
+
+                % Position is relative to figure in R2025b
+                axPixelX = cp(1) - axPos(1);
+                axPixelY = cp(2) - axPos(2);
+
+                % Check if mouse is within axes bounds
+                if axPixelX >= 0 && axPixelX <= axPos(3) ...
+                 && axPixelY >= 0 && axPixelY <= axPos(4)
+                    if obj.CursorMap.isKey(i)
+                        cursor = obj.CursorMap(i);
+                        if isvalid(cursor)
+                            cursor.UpdateFromMouse(axPixelX, axPixelY);
+                        end
+                    end
+                    obj.FocusedAxes = i;
+                    return
                 end
             end
+
+            % Mouse not over any axes → hide all cursors
             obj.HideCursor();
+        end
+
+        % ================================================================
+        %  Private: utilities
+        % ================================================================
+
+        function deleteDataLines(~, ax)
+        %DELETEDATALINES  Remove all data lines from axes, preserving cursors.
+        %   Uses findobj for R2025b compatibility (ax.Children may be unreliable).
+
+            % Delete data lines (non-cursor)
+            allLines = findobj(ax, 'Type', 'line');
+            for i = 1:numel(allLines)
+                if ~strcmp(allLines(i).Tag, 'cursor')
+                    delete(allLines(i));
+                end
+            end
+
+            % Delete ConstantLine objects (xline/created by other code)
+            cl = findobj(ax, 'Type', 'constantline');
+            for i = 1:numel(cl)
+                delete(cl(i));
+            end
+
+            % Delete text annotations
+            txt = findobj(ax, 'Type', 'text');
+            for i = 1:numel(txt)
+                delete(txt(i));
+            end
+        end
+
+        function refreshLegend(obj, ax) %#ok<INUSU>
+        %REFRESHLEGEND  Show legend only when 2+ lines exist.
+            allLines = findobj(ax, 'Type', 'line');
+            dataMask = arrayfun(@(l) ~strcmp(l.Tag, 'cursor'), allLines);
+            nData = sum(dataMask);
+            if nData >= 2
+                legend(ax, allLines(dataMask), 'Interpreter', 'none', ...
+                    'Location', 'northwest');
+            else
+                legend(ax, 'off');
+            end
         end
     end
 end

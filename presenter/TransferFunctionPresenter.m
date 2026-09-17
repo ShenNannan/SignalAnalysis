@@ -1,104 +1,152 @@
-classdef TransferFunctionPresenter < BasePresenter
-% TransferFunctionPresenter - 传函分析控制层（FRF 频响查看器）
-%
-% 桥接 TransferFunctionView 与 Service 层：
-%   浏览/导入（FileExplorer + DataReaderFactory）→ ExtractFrfCurves → 渲染三图。
-% 数据模型简单（Dataset + 曲线列表），不引入 SessionData。
+classdef TransferFunctionPresenter < handle
+%TRANSFERFUNCTIONPRESENTER  L4 business brain for FRF analysis.
+%   Owns the FRF curves. Drives the View through high-level methods only.
+%   Handles cross-axis cursor synchronization.
 
     properties (SetAccess = private)
-        View        % TransferFunctionView
-        Curves_     % struct array：name/freq/amp/phase/corr
+        View                % TransferFunctionView (L3 mediator)
+        StatusCallback      % function_handle @(txt)
+        Curves_             % struct array: name / freq / amp / phase / corr
+        Listeners           % cell of event.listener
     end
 
     methods
-        function obj = TransferFunctionPresenter(view)
-            obj.View = view;
-            obj.Curves_ = struct([]);
+        % ================================================================
+        %  Construction / Destruction
+        % ================================================================
 
-            obj.TrackListener(addlistener(view, 'BrowseClicked', @obj.OnBrowse));
-            obj.TrackListener(addlistener(view, 'ImportButtonClicked', @obj.OnImport));
-            obj.TrackListener(addlistener(view, 'CurveSelectionChanged', @obj.OnCurveSelection));
-            obj.TrackListener(addlistener(view, 'ClearAllClicked', @obj.OnClearAll));
+        function obj = TransferFunctionPresenter(viewHandle, statusCallback)
+            arguments
+                viewHandle     (1,1)
+                statusCallback (1,1) function_handle = @(txt) []
+            end
+
+            obj.View           = viewHandle;
+            obj.StatusCallback = statusCallback;
+            obj.Curves_        = struct([]);
+            obj.Listeners      = {};
+
+            obj.wireViewEvents();
         end
 
-        function OnBrowse(obj, ~, ~)
-            startPath = obj.View.GetPath();
-            if isempty(startPath) || ~exist(startPath, 'dir')
-                startPath = pwd;
+        function delete(obj)
+            for i = 1:numel(obj.Listeners)
+                if ~isempty(obj.Listeners{i}) && isvalid(obj.Listeners{i})
+                    delete(obj.Listeners{i});
+                end
             end
-            folder = ViewUtils.SelectFolder(startPath);
-            if ~isempty(folder)
-                obj.View.SetPath(folder);
-            end
+            obj.Listeners = {};
         end
 
-        function OnImport(obj, ~, ~)
-            path = obj.View.GetPath();
-            if isempty(path)
-                obj.View.ShowError('请先选择数据路径');
-                return;
+        end
+
+        % ================================================================
+        %  Event handlers
+        % ================================================================
+
+        methods (Access = private)
+
+            function wireViewEvents(obj)
+                v = obj.View;
+                obj.track(addlistener(v, 'BrowseClicked',         @obj.OnBrowse));
+                obj.track(addlistener(v, 'ImportButtonClicked',   @obj.OnImport));
+                obj.track(addlistener(v, 'CurveSelectionChanged', @obj.OnCurveSelection));
+                obj.track(addlistener(v, 'ClearAllClicked',       @obj.OnClearAll));
+                obj.track(addlistener(v, 'CursorSync',            @obj.OnCursorSync));
             end
 
-            obj.View.ShowLoading('导入 FRF 数据...');
-            try
-                if isfolder(path)
-                    [results, warnings] = DataReaderFactory.Import(path); %#ok<ASGLU>
-                elseif isfile(path)
-                    [~, fname] = fileparts(path);
-                    fileStructs = {struct('path', path, 'fname', fname)};
-                    results = DataReaderFactory.ProcessFileGroup(fileStructs, fileparts(path));
-                else
+            function track(obj, listener)
+                obj.Listeners{end+1} = listener;
+            end
+
+            function OnBrowse(obj, ~, ~)
+                startPath = obj.View.GetPath();
+                if isempty(startPath) || ~exist(startPath, 'dir')
+                    startPath = pwd;
+                end
+                folder = ViewUtils.SelectFolder(startPath);
+                if ~isempty(folder)
+                    obj.View.SetPath(folder);
+                end
+            end
+
+            function OnImport(obj, ~, ~)
+                path = obj.View.GetPath();
+                if isempty(path)
+                    obj.View.ShowError('请先选择数据路径');
+                    return
+                end
+
+                obj.View.ShowLoading('导入 FRF 数据...');
+                try
+                    if isfolder(path)
+                        [results, ~] = DataReaderFactory.Import(path);
+                    elseif isfile(path)
+                        [~, fname] = fileparts(path);
+                        fileStructs = {struct('path', path, 'fname', fname)};
+                        results = DataReaderFactory.ProcessFileGroup( ...
+                            fileStructs, fileparts(path));
+                    else
+                        obj.View.CloseLoading();
+                        obj.View.ShowError(['路径不存在: ' path]);
+                        return
+                    end
+
+                    if isempty(results)
+                        obj.View.CloseLoading();
+                        obj.View.ShowError('未找到可导入的 FRF 数据');
+                        return
+                    end
+
+                    curves = struct([]);
+                    for i = 1:numel(results)
+                        ds = DataReaderFactory.LoadStandard(results{i}.matPath);
+                        curves = [curves, DataReaderFactory.ExtractFrfCurves(ds)]; %#ok<AGROW>
+                    end
+                    obj.Curves_ = curves;
+
+                    obj.View.SetCurveList({curves.name}, []);
+                    obj.applySelection();
                     obj.View.CloseLoading();
-                    obj.View.ShowError(['路径不存在: ' path]);
-                    return;
-                end
-
-                if isempty(results)
+                    obj.StatusCallback(sprintf('  导入 %d 条 FRF 曲线', numel(curves)));
+                catch e
                     obj.View.CloseLoading();
-                    obj.View.ShowError('未找到可导入的 FRF 数据');
-                    return;
+                    obj.View.ShowError(sprintf('导入失败:\n%s', e.message));
                 end
-
-                curves = struct([]);
-                for i = 1:length(results)
-                    ds = DataReaderFactory.LoadStandard(results{i}.matPath);
-                    curves = [curves, DataReaderFactory.ExtractFrfCurves(ds)]; %#ok<AGROW>
-                end
-                obj.Curves_ = curves;
-
-                obj.View.SetCurveList({curves.name}, []);
-                obj.ApplySelection();
-                obj.View.CloseLoading();
-            catch e
-                obj.View.CloseLoading();
-                obj.View.ShowError(sprintf('导入失败:\n%s', e.message));
             end
-        end
 
-        function OnCurveSelection(obj, ~, ~)
-            obj.ApplySelection();
-        end
+            function OnCurveSelection(obj, ~, ~)
+                obj.applySelection();
+            end
 
-        function OnClearAll(obj, ~, ~)
-            obj.Curves_ = struct([]);
-            obj.View.SetCurveList({}, []);
-            obj.View.ClearPlots();
-            obj.View.SetPath('');
-        end
-    end
-
-    methods (Access = private)
-        function ApplySelection(obj)
-        % ApplySelection 按勾选状态叠画三图
-            if isempty(obj.Curves_)
+            function OnClearAll(obj, ~, ~)
+                obj.Curves_ = struct([]);
+                obj.View.SetCurveList({}, []);
                 obj.View.ClearPlots();
-                return;
+                obj.View.SetPath('');
+                obj.StatusCallback(' ');
             end
-            checked = obj.View.GetCurveSelection();
-            if numel(checked) ~= numel(obj.Curves_)
-                return;
+
+            function OnCursorSync(obj, ~, evt)
+            %ONCURSORSYNC  Synchronize cursors across all three axes.
+                d = evt.Data;
+                obj.View.SyncCursorToFreq(d.freq, d.sourceAxes);
             end
-            obj.View.RenderFrf(obj.Curves_(checked));
+        end
+
+        methods (Access = private)
+
+            function applySelection(obj)
+            %APPLYSELECTION  Filter curves by checkbox state and render.
+                if isempty(obj.Curves_)
+                    obj.View.ClearPlots();
+                    return
+                end
+                checked = obj.View.GetCurveSelection();
+                if numel(checked) ~= numel(obj.Curves_)
+                    return
+                end
+                obj.View.RenderFrf(obj.Curves_(checked));
+            end
         end
     end
-end
