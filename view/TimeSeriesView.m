@@ -16,7 +16,6 @@ classdef TimeSeriesView < handle
         NormClicked
         CalcClicked
         AxesRemoveClicked
-        AxesClicked             % struct('axesIdx',..,'x',..,'y',..)
 
         % Proxied from ChannelTableComponent.ActionRequested
         ChannelCheckChanged     % struct('datasetIdx',..,'colIdx',..,'checked',..)
@@ -32,6 +31,9 @@ classdef TimeSeriesView < handle
 
         % Proxied from CursorComponent.CursorSnapped
         CursorMotion            % struct('axesIdx',..,'x',..,'y',..,'lineTag',..,'xDataIdx',..)
+
+        % Axes focus change (for channel table auto-refresh)
+        FocusChanged
     end
 
     % ---- L2 Component handles (SetAccess = private for safety) ----
@@ -49,6 +51,7 @@ classdef TimeSeriesView < handle
         NormDropdown
         Toaster             % AsyncToaster (RAII, auto-closes)
         AxesXChannelMap     % cell: per-axes X-channel ref (for linkaxes grouping)
+        HighlightedAxes double = 0  % currently highlighted axes index (0 = none)
     end
 
     methods
@@ -105,6 +108,15 @@ classdef TimeSeriesView < handle
 
             % ---- Register global mouse motion for cursors ----
 
+        end
+
+        function delete(obj)
+        %DELETE  Destroy all CursorComponent instances on teardown.
+            keys = obj.CursorMap.keys;
+            for k = 1:numel(keys)
+                c = obj.CursorMap(keys{k});
+                if isvalid(c), delete(c); end
+            end
         end
 
         % ================================================================
@@ -391,6 +403,26 @@ classdef TimeSeriesView < handle
             mode = obj.SpectrumDropdown.Value;
         end
 
+        function props = GetAxesLineProperties(obj, axesIdx)
+        %GETAXESLINEPROPERTIES  Read visual properties of data lines on an axes.
+        %   Returns struct array with fields: Color, LineStyle, DisplayName, IsRightY.
+            props = struct('Color',{},'LineStyle',{},'DisplayName',{},'IsRightY',{});
+            hAx = obj.GridMgr.GetAxes(axesIdx);
+            if isempty(hAx) || ~isvalid(hAx), return; end
+
+            allLines = findobj(hAx, 'Type', 'line');
+            idx = 0;
+            for k = 1:numel(allLines)
+                ln = allLines(k);
+                if strcmp(ln.Tag, 'cursor'), continue; end
+                idx = idx + 1;
+                props(idx).Color      = ln.Color;
+                props(idx).LineStyle  = ln.LineStyle;
+                props(idx).DisplayName = ln.DisplayName;
+                props(idx).IsRightY   = strcmp(ln.Tag, 'rightY');
+            end
+        end
+
         % ================================================================
         %  Popup factory methods (L3: UI creation, no business logic)
         % ================================================================
@@ -531,11 +563,9 @@ classdef TimeSeriesView < handle
             uibutton(tb, 'push', 'Text', char(8722), 'FontSize', 14, ...
                 'ButtonPushedFcn', @(s,e) obj.onRemoveAxes());
             uibutton(tb, 'push', 'Text', '||', ...
-                'ButtonPushedFcn', @(s,e) notify(obj, 'AxesClicked', ...
-                    AppEventData(struct('action','layout','mode','single'))));
+                'ButtonPushedFcn', @(s,e) obj.GridMgr.SetLayoutMode('single'));
             uibutton(tb, 'push', 'Text', '=', ...
-                'ButtonPushedFcn', @(s,e) notify(obj, 'AxesClicked', ...
-                    AppEventData(struct('action','layout','mode','dual'))));
+                'ButtonPushedFcn', @(s,e) obj.GridMgr.SetLayoutMode('dual'));
             uibutton(tb, 'push', 'Text', 'Export', ...
                 'ButtonPushedFcn', @(s,e) notify(obj, 'ExportClicked'));
             uibutton(tb, 'push', 'Text', 'Clear', ...
@@ -602,6 +632,8 @@ classdef TimeSeriesView < handle
             hAx.ButtonDownFcn = @(s,e) obj.onAxesButtonDown(idx, e);
 
             obj.FocusedAxes = min(obj.FocusedAxes, idx);
+            obj.highlightAxes(obj.FocusedAxes);
+            notify(obj, 'FocusChanged');
         end
 
         function onAxesRemoved(obj, e)
@@ -626,6 +658,9 @@ classdef TimeSeriesView < handle
             obj.CursorMap = newMap;
 
             obj.FocusedAxes = min(obj.FocusedAxes, obj.GridMgr.Count);
+            obj.HighlightedAxes = 0;  % reset so highlightAxes applies to new index
+            obj.highlightAxes(obj.FocusedAxes);
+            notify(obj, 'FocusChanged');
             notify(obj, 'AxesRemoveClicked');
         end
 
@@ -664,8 +699,10 @@ classdef TimeSeriesView < handle
         end
 
         function onAxesButtonDown(obj, axesIdx, ~)
-        %ONAXESBUTTONDOWN  Track which axes is focused.
+        %ONAXESBUTTONDOWN  Track which axes is focused and highlight it.
             obj.FocusedAxes = axesIdx;
+            obj.highlightAxes(axesIdx);
+            notify(obj, 'FocusChanged');
         end
 
         function onAddAxes(obj)
@@ -686,13 +723,6 @@ classdef TimeSeriesView < handle
         % ================================================================
         %  Private: cursor motion driver
         % ================================================================
-
-        function registerCursorMotion(obj)
-        %REGISTERCURSORMOTION  Install figure-level mouse motion callback.
-            fig = ancestor(obj.Grid, 'figure');
-            if isempty(fig), return; end
-            fig.WindowButtonMotionFcn = @(s,e) obj.onCursorMotion();
-        end
 
         function onCursorMotion(obj)
         %ONCURSORMOTION  Route mouse position to the CursorComponent
@@ -730,13 +760,8 @@ classdef TimeSeriesView < handle
                         cursor = obj.CursorMap(i);
                         if isvalid(cursor)
                             cursor.UpdateFromMouse(axPixelX, axPixelY);
-                        else
-                            fprintf('[CURSOR] onCursorMotion: cursor at idx=%d INVALID\n', i);
                         end
-                    else
-                        fprintf('[CURSOR] onCursorMotion: CursorMap has NO key %d\n', i);
                     end
-                    obj.FocusedAxes = i;
                     return
                 end
             end
@@ -757,6 +782,36 @@ classdef TimeSeriesView < handle
             else
                 legend(ax, 'off');
             end
+        end
+
+        function highlightAxes(obj, axesIdx)
+        %HIGHLIGHTAXES  Visual border highlight on the focused axes.
+            SEL_COLOR   = [0 0.45 0.74];
+            SEL_WIDTH   = 1.5;
+            DEF_COLOR   = [0.15 0.15 0.15];
+            DEF_WIDTH   = 0.5;
+
+            % Restore previous
+            if obj.HighlightedAxes >= 1 && obj.HighlightedAxes <= obj.GridMgr.Count
+                prev = obj.GridMgr.GetAxes(obj.HighlightedAxes);
+                if ~isempty(prev) && isvalid(prev)
+                    prev.XColor = DEF_COLOR;
+                    prev.YColor = DEF_COLOR;
+                    prev.LineWidth = DEF_WIDTH;
+                end
+            end
+
+            % Highlight new
+            if axesIdx >= 1 && axesIdx <= obj.GridMgr.Count
+                hAx = obj.GridMgr.GetAxes(axesIdx);
+                if ~isempty(hAx) && isvalid(hAx)
+                    hAx.XColor = SEL_COLOR;
+                    hAx.YColor = SEL_COLOR;
+                    hAx.LineWidth = SEL_WIDTH;
+                end
+            end
+
+            obj.HighlightedAxes = axesIdx;
         end
     end
 end

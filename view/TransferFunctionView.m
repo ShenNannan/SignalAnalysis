@@ -49,6 +49,13 @@ classdef TransferFunctionView < handle
 
         end
 
+        function delete(obj)
+        %DELETE  Destroy cursor components on teardown.
+            if ~isempty(obj.AmpCursor)   && isvalid(obj.AmpCursor),   delete(obj.AmpCursor);   end
+            if ~isempty(obj.PhaseCursor) && isvalid(obj.PhaseCursor), delete(obj.PhaseCursor); end
+            if ~isempty(obj.CorrCursor)  && isvalid(obj.CorrCursor),  delete(obj.CorrCursor);  end
+        end
+
         % ================================================================
         %  Path management
         % ================================================================
@@ -261,12 +268,6 @@ classdef TransferFunctionView < handle
             addlistener(obj.AmpCursor,   'CursorSnapped', @(s,e) obj.onCursorSnapped(e));
             addlistener(obj.PhaseCursor, 'CursorSnapped', @(s,e) obj.onCursorSnapped(e));
             addlistener(obj.CorrCursor,  'CursorSnapped', @(s,e) obj.onCursorSnapped(e));
-        end
-
-        function registerCursorMotion(obj)
-            fig = ancestor(obj.Grid, 'figure');
-            if isempty(fig), return; end
-            fig.WindowButtonMotionFcn = @(s,e) obj.onCursorMotion();
         end
 
         % ================================================================

@@ -375,11 +375,14 @@ classdef CursorComponent < handle
                 % Skip on dual-Y axes: uistack throws BadChildrenPermutation
                 isDualY = numel(ax.YAxis) >= 2 && strcmp(ax.YAxis(2).Visible, 'on');
                 if ~isDualY
+                    % uistack throws BadChildrenPermutation on some dual-Y
+                    % configurations even after the visibility guard above;
+                    % safe to ignore since Z-order is cosmetic only.
                     try
                         if isvalid(obj.XLineH),    uistack(obj.XLineH,    'top'); end
                         if isvalid(obj.MarkerH),   uistack(obj.MarkerH,   'top'); end
                         if isvalid(obj.HoverTextH), uistack(obj.HoverTextH, 'top'); end
-                    catch
+                    catch  % BadChildrenPermutation — cosmetic, ignore
                     end
                 end
             end

@@ -63,6 +63,16 @@ classdef ChannelTableComponent < handle
             obj.buildContextMenu();
         end
 
+        function delete(obj)
+        %DELETE  Destroy owned UI objects on component teardown.
+            if ~isempty(obj.ContextMenuH) && isvalid(obj.ContextMenuH)
+                delete(obj.ContextMenuH);
+            end
+            if ~isempty(obj.TableH) && isvalid(obj.TableH)
+                delete(obj.TableH);
+            end
+        end
+
         % ------------------------------------------------------------------
         % Public state setters (called by Presenter / View)
         % ------------------------------------------------------------------

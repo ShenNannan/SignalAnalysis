@@ -16,6 +16,7 @@ classdef AxesGridComponent < handle
         GridLayout      % uigridlayout handle
         AxesList        % 1xN uiaxes handles (ordered)
         MaxAxes         % hard cap (default 6)
+        LayoutForce     % 'auto' | 'single' | 'dual'
     end
 
     properties (Dependent, SetAccess = private)
@@ -36,6 +37,7 @@ classdef AxesGridComponent < handle
 
             obj.MaxAxes = p.Results.MaxAxes;
             obj.AxesList = gobjects(1, 0);
+            obj.LayoutForce = 'auto';
 
             obj.GridLayout = uigridlayout(parentFig, [1 1], ...
                 'RowHeight',    {'1x'}, ...
@@ -62,8 +64,8 @@ classdef AxesGridComponent < handle
             obj.AxesList(end+1) = uiaxes(obj.GridLayout);
             hAx = obj.AxesList(end);
 
-            % Initialize with invisible axes properties
-            hAx.Toolbar.Visible = 'off';
+            % Initialize axes properties
+            hAx.Toolbar.Visible = 'on';
             hAx.Box = 'on';
 
             obj.relayoutGrid();
@@ -134,6 +136,24 @@ classdef AxesGridComponent < handle
         %GETALLAXES  Return the full AxesList row vector.
             list = obj.AxesList;
         end
+
+        function SetLayoutMode(obj, mode)
+        %SETLAYOUTMODE  Force a layout mode and reflow.
+        %   mode: 'auto' | 'single' | 'dual'
+            if strcmp(mode, obj.LayoutForce), return; end
+            obj.LayoutForce = mode;
+            obj.relayoutGrid();
+            obj.pumpDrawnow();
+        end
+
+        function delete(obj)
+        %DELETE  Destroy all managed axes on component teardown.
+            for k = numel(obj.AxesList):-1:1
+                if isvalid(obj.AxesList(k))
+                    delete(obj.AxesList(k));
+                end
+            end
+        end
     end
 
     % ------------------------------------------------------------------
@@ -145,14 +165,18 @@ classdef AxesGridComponent < handle
         end
 
         function mode = get.LayoutMode(obj)
-            switch obj.Count
-                case 1,     mode = "single";
-                case 2,     mode = "vert2";
-                case 3,     mode = "vert3";
-                case 4,     mode = "2x2";
-                case 5,     mode = "2x3";
-                case 6,     mode = "3x2";
-                otherwise,  mode = "empty";
+            if ~strcmp(obj.LayoutForce, 'auto')
+                mode = string(obj.LayoutForce);
+            else
+                switch obj.Count
+                    case 1,     mode = "single";
+                    case 2,     mode = "vert2";
+                    case 3,     mode = "vert3";
+                    case 4,     mode = "2x2";
+                    case 5,     mode = "2x3";
+                    case 6,     mode = "3x2";
+                    otherwise,  mode = "empty";
+                end
             end
         end
     end
@@ -164,13 +188,8 @@ classdef AxesGridComponent < handle
 
         function relayoutGrid(obj)
         %RELAYOUTGRID  Recalculate grid rows/columns for current Count.
-        %   Layout map (all axes go row-major into the grid):
-        %     Count 1  -> 1x1
-        %     Count 2  -> 2x1 (vertical stack)
-        %     Count 3  -> 3x1
-        %     Count 4  -> 2x2
-        %     Count 5  -> 3x2  (last cell empty)
-        %     Count 6  -> 3x2
+        %   Respects LayoutForce: 'auto' (by count), 'single' (1-col),
+        %   'dual' (2-col).
 
             n = obj.Count;
 
@@ -180,20 +199,19 @@ classdef AxesGridComponent < handle
                 return
             end
 
-            switch n
-                case 1
-                    nrows = 1; ncols = 1;
-                case 2
-                    nrows = 2; ncols = 1;
-                case 3
-                    nrows = 3; ncols = 1;
-                case {4}
-                    nrows = 2; ncols = 2;
-                case {5, 6}
-                    nrows = 3; ncols = 2;
-                otherwise
-                    nrows = ceil(n/2); ncols = 2;
+            switch obj.LayoutForce
+                case 'single'
+                    ncols = 1;
+                case 'dual'
+                    ncols = min(n, 2);
+                otherwise  % 'auto'
+                    switch n
+                        case 1,     ncols = 1;
+                        case {2, 3},ncols = 1;
+                        otherwise,  ncols = 2;
+                    end
             end
+            nrows = ceil(n / ncols);
 
             obj.GridLayout.RowHeight    = repmat({'1x'}, 1, nrows);
             obj.GridLayout.ColumnWidth  = repmat({'1x'}, 1, ncols);

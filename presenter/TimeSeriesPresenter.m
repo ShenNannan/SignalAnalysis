@@ -75,7 +75,6 @@ classdef TimeSeriesPresenter < handle
                 obj.track(addlistener(v, 'CalcClicked',            @obj.OnCalcChannel));
                 obj.track(addlistener(v, 'SliceDialogClicked',     @obj.OnSliceDialog));
                 obj.track(addlistener(v, 'SliceResetClicked',      @obj.OnSliceReset));
-                obj.track(addlistener(v, 'AxesClicked',            @obj.OnAxesClicked));
                 obj.track(addlistener(v, 'SetSampleRateClicked',   @obj.OnSetSampleRate));
                 obj.track(addlistener(v, 'InlineRenameChannel',    @obj.OnInlineRenameChannel));
                 obj.track(addlistener(v, 'InlineRenameDataset',    @obj.OnInlineRenameDataset));
@@ -84,6 +83,7 @@ classdef TimeSeriesPresenter < handle
                 obj.track(addlistener(v, 'SetRightYAxisClicked',   @obj.OnSetRightYAxis));
                 obj.track(addlistener(v, 'ClearRightYAxisClicked', @obj.OnClearRightYAxis));
                 obj.track(addlistener(v, 'CursorMotion',           @obj.OnCursorMotion));
+                obj.track(addlistener(v, 'FocusChanged',           @(s,e) obj.RefreshChannelTable()));
             end
 
             function track(obj, listener)
@@ -339,16 +339,6 @@ classdef TimeSeriesPresenter < handle
                 end
                 obj.syncViewAxisState(obj.View.FocusedAxes);
                 obj.RefreshChannelTable();
-            end
-
-            function OnAxesClicked(obj, ~, evt)
-            %ONAXESCLICKED  Layout toggle from toolbar.
-                d = evt.Data;
-                if isfield(d, 'mode')
-                    % Layout mode change is handled by the View internally
-                    % (AxesGridComponent layout). Presenter just re-renders.
-                    obj.syncViewAxisState(obj.View.FocusedAxes);
-                end
             end
         end
 
@@ -753,6 +743,13 @@ classdef TimeSeriesPresenter < handle
                 ax1 = h.axTime; ax2 = h.axFreq;
                 hold(ax1, 'on'); hold(ax2, 'on');
 
+                % Inherit line visuals from source axes
+                lineProps = obj.View.GetAxesLineProperties(axIdx);
+                propMap = containers.Map('KeyType', 'char', 'ValueType', 'any');
+                for lp = 1:numel(lineProps)
+                    propMap(lineProps(lp).DisplayName) = lineProps(lp);
+                end
+
                 nPlotted = 0;
                 for c = 1:length(chans)
                     chan = chans{c};
@@ -765,21 +762,31 @@ classdef TimeSeriesPresenter < handle
                         chan.Data, xRaw, chan.SliceRange, hasXChannel);
                     sig = obj.ApplyNorm(axIdx, c, sig);
 
-                    chanColor = DataPreparationService.ChannelColor(chan.DatasetIdx, chan.ColIdx, 6);
                     chanLabel = chan.Label;
+                    % Match line properties from source axes
+                    chanColor  = DataPreparationService.ChannelColor(chan.DatasetIdx, chan.ColIdx, 6);
+                    chanStyle  = '-';
+                    if propMap.isKey(chanLabel)
+                        lp = propMap(chanLabel);
+                        chanColor = lp.Color;
+                        chanStyle = lp.LineStyle;
+                    end
                     nPlotted = nPlotted + 1;
-                    plot(ax1, xSig, sig, 'Color', chanColor, 'DisplayName', chanLabel);
+                    plot(ax1, xSig, sig, 'Color', chanColor, 'LineStyle', chanStyle, ...
+                        'DisplayName', chanLabel);
 
                     switch analysisType
                         case 'fft'
                             [P1, freq] = SignalProcessor.ComputeFFTSingleSided(sig, sampleRate);
                             [freq, P1]  = SignalProcessor.SkipZeroFreq(freq, P1);
-                            semilogx(ax2, freq, P1, 'Color', chanColor, 'DisplayName', chanLabel);
+                            semilogx(ax2, freq, P1, 'Color', chanColor, 'LineStyle', chanStyle, ...
+                                'DisplayName', chanLabel);
                         case 'psd'
                             [cumRms, freq, totalRms] = SignalProcessor.ComputeCumulativeRMS(sig, sampleRate);
                             label = sprintf('%s (RMS=%.4f)', chanLabel, totalRms);
                             [freq, cumRms] = SignalProcessor.SkipZeroFreq(freq, cumRms);
-                            semilogx(ax2, freq, cumRms, 'Color', chanColor, 'DisplayName', label);
+                            semilogx(ax2, freq, cumRms, 'Color', chanColor, 'LineStyle', chanStyle, ...
+                                'DisplayName', label);
                     end
                 end
 
