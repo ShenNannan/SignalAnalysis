@@ -208,10 +208,11 @@ classdef AxesGridComponent < handle
         end
 
         function pumpDrawnow(obj)  %#ok<MANU>
-        %PUMPDRAWNOW  Force 40 drawnow limitrate to flush layout.
-            for p = 1:40
-                drawnow limitrate
+        %PUMPDRAWNOW  Flush layout with minimal drawnow calls.
+            for p = 1:5
+                drawnow limitrate;
             end
+            drawnow;
         end
     end
 end

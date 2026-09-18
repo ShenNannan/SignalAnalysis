@@ -189,6 +189,11 @@ classdef SessionData < handle
             end
         end
 
+        function paths = GetAllDatasetPaths(obj)
+        % GetAllDatasetPaths 获取所有数据集路径（避免外部访问私有属性）
+            paths = obj.DatasetPaths_;
+        end
+
         % ---- Axes 通道管理 ----
 
         function AddChannelToAxes(obj, axesIdx, datasetIdx, colIdx)

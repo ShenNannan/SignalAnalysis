@@ -14,6 +14,13 @@ classdef TestChannelTableComponent < matlab.unittest.TestCase
 
     methods (TestMethodSetup)
         function createFixture(testCase)
+            root = fileparts(fileparts(mfilename('fullpath')));
+            addpath(fullfile(root, 'view'));
+            addpath(fullfile(root, 'view', 'components'));
+            addpath(fullfile(root, 'model'));
+            addpath(fullfile(root, 'presenter'));
+            addpath(fullfile(root, 'service'));
+            addpath(root);
             testCase.Fig = uifigure('Visible', 'off');
             testCase.Comp = ChannelTableComponent(testCase.Fig);
             testCase.Comp.SetRows(buildMockRows());

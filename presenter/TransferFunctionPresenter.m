@@ -65,35 +65,15 @@ classdef TransferFunctionPresenter < handle
                     startPath = pwd;
                 end
                 folder = ViewUtils.SelectFolder(startPath);
-                if ~isempty(folder)
-                    obj.View.SetPath(folder);
-                end
-            end
+                if isempty(folder), return; end
+                obj.View.SetPath(folder);
 
-            function OnImport(obj, ~, ~)
-                path = obj.View.GetPath();
-                if isempty(path)
-                    obj.View.ShowError('请先选择数据路径');
-                    return
-                end
-
+                % Auto-import (same behavior as TimeSeries OnBrowseFolder)
                 obj.View.ShowLoading('导入 FRF 数据...');
                 try
-                    if isfolder(path)
-                        [results, ~] = DataReaderFactory.Import(path);
-                    elseif isfile(path)
-                        [~, fname] = fileparts(path);
-                        fileStructs = {struct('path', path, 'fname', fname)};
-                        results = DataReaderFactory.ProcessFileGroup( ...
-                            fileStructs, fileparts(path));
-                    else
-                        obj.View.CloseLoading();
-                        obj.View.ShowError(['路径不存在: ' path]);
-                        return
-                    end
-
+                    [results, ~] = DataReaderFactory.Import(folder);
+                    obj.View.CloseLoading();
                     if isempty(results)
-                        obj.View.CloseLoading();
                         obj.View.ShowError('未找到可导入的 FRF 数据');
                         return
                     end
@@ -105,9 +85,52 @@ classdef TransferFunctionPresenter < handle
                     end
                     obj.Curves_ = curves;
 
-                    obj.View.SetCurveList({curves.name}, []);
+                    names = {curves.name};
+                    obj.View.SetCurveList(names, false(numel(names), 1));
                     obj.applySelection();
+                catch e
                     obj.View.CloseLoading();
+                    obj.View.ShowError(sprintf('导入失败:\n%s', e.message));
+                end
+            end
+
+            function OnImport(obj, ~, ~)
+                startPath = obj.View.GetPath();
+                if isempty(startPath) || ~exist(startPath, 'dir')
+                    startPath = pwd;
+                end
+                [~, filePaths] = ViewUtils.SelectFiles(startPath, ...
+                    {'*.dat;*.csv;*.txt;*.xlsx;*.mat', ...
+                     'Data Files (*.dat;*.csv;*.txt;*.xlsx;*.mat)'});
+                if isempty(filePaths), return; end
+
+                obj.View.ShowLoading('导入 FRF 数据...');
+                try
+                    outputDir = fileparts(filePaths{1});
+                    fileStructs = cell(1, numel(filePaths));
+                    for k = 1:numel(filePaths)
+                        [~, fname] = fileparts(filePaths{k});
+                        fileStructs{k} = struct('path', filePaths{k}, 'fname', fname);
+                    end
+                    results = DataReaderFactory.ProcessFileGroup(fileStructs, outputDir);
+                    obj.View.CloseLoading();
+                    obj.View.SetPath(outputDir);
+
+                    if isempty(results)
+                        obj.View.ShowError('未找到可导入的 FRF 数据');
+                        return
+                    end
+
+                    curves = struct([]);
+                    for i = 1:numel(results)
+                        ds = DataReaderFactory.LoadStandard(results{i}.matPath);
+                        curves = [curves, DataReaderFactory.ExtractFrfCurves(ds)]; %#ok<AGROW>
+                    end
+                    obj.Curves_ = curves;
+
+                    names = {curves.name};
+                    obj.View.SetCurveList(names, false(numel(names), 1));
+                    obj.applySelection();
                     obj.StatusCallback(sprintf('  导入 %d 条 FRF 曲线', numel(curves)));
                 catch e
                     obj.View.CloseLoading();
@@ -147,6 +170,14 @@ classdef TransferFunctionPresenter < handle
                     return
                 end
                 obj.View.RenderFrf(obj.Curves_(checked));
+
+                % Set cursor readout: Freq (Hz) + axis-specific Y unit
+                obj.View.SetCursorLabelFormatter(1, ...
+                    @(x, y) sprintf('Freq: %.4g Hz\nMag: %.3f dB', x, y));
+                obj.View.SetCursorLabelFormatter(2, ...
+                    @(x, y) sprintf('Freq: %.4g Hz\nPhase: %.3f deg', x, y));
+                obj.View.SetCursorLabelFormatter(3, ...
+                    @(x, y) sprintf('Freq: %.4g Hz\nCorr: %.4f', x, y));
             end
         end
     end

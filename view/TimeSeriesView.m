@@ -127,7 +127,7 @@ classdef TimeSeriesView < handle
             savedButtonDownFcn = ax.ButtonDownFcn;
 
             % --- Targeted cleanup: delete data lines only, preserve cursors ---
-            obj.deleteDataLines(ax);
+            ViewUtils.DeleteDataLines(ax);
             legend(ax, 'off');
             ax.YAxis(2).Visible = 'off';
 
@@ -137,6 +137,7 @@ classdef TimeSeriesView < handle
             ax.ColorOrderIndex = 1;
             ax.XLimMode = 'auto';
             ax.YLimMode = 'auto';
+            ax.NextPlot = 'add';  % CRITICAL: prevent plot() from destroying cursor objects
 
             if hasRightY
                 ax.YAxis(2).Visible = 'on';
@@ -185,7 +186,7 @@ classdef TimeSeriesView < handle
         %CLEARAXES  Clear data lines from a single axes (preserves cursors).
             ax = obj.GetAxes(axesIdx);
             if isempty(ax) || ~isvalid(ax), return; end
-            obj.deleteDataLines(ax);
+            ViewUtils.DeleteDataLines(ax);
             legend(ax, 'off');
             ax.YAxis(2).Visible = 'off';
             yyaxis(ax, 'left');
@@ -266,7 +267,8 @@ classdef TimeSeriesView < handle
         function SetCursorLabelFormatter(obj, axesIdx, fcn)
         %SETCURSORLABELFORMATTER  Set the label formatter for a cursor.
             if obj.CursorMap.isKey(axesIdx)
-                obj.CursorMap(axesIdx).LabelFormatterFcn = fcn;
+                cursor = obj.CursorMap(axesIdx);
+                cursor.LabelFormatterFcn = fcn;
             end
         end
 
@@ -698,66 +700,51 @@ classdef TimeSeriesView < handle
             fig = ancestor(obj.Grid, 'figure');
             if isempty(fig), return; end
 
-            % Get mouse position in figure pixels
-            cp = fig.CurrentPoint;   % [x, y] in figure pixels
+            cp = fig.CurrentPoint;
 
             for i = 1:obj.GridMgr.Count
                 ax = obj.GridMgr.GetAxes(i);
                 if isempty(ax) || ~isvalid(ax), continue; end
 
-                % Convert to figure-pixel coordinates for reliable hit-testing
-                axPos = hgconvertunits(fig, ax.Position, ax.Units, 'pixels', fig);
+                % --- Robust coordinate conversion for uifigure + uigridlayout ---
+                % Force both figure and axes to 'pixels', then compute
+                % axes-relative mouse position without hgconvertunits.
+                oldFigU = fig.Units; fig.Units = 'pixels';
+                oldAxU  = ax.Units;  ax.Units  = 'pixels';
 
-                % Position is relative to figure in R2025b
+                figPos = fig.InnerPosition;   % [left, bottom, width, height]
+                axPos  = ax.Position;         % relative to parent container
+
+                % Mouse position relative to axes origin
+                % (assumes parent layout starts at figure content area origin)
                 axPixelX = cp(1) - axPos(1);
                 axPixelY = cp(2) - axPos(2);
 
-                % Check if mouse is within axes bounds
+                fig.Units = oldFigU;
+                ax.Units  = oldAxU;
+
+                % Hit-test: check if mouse is within axes bounds
                 if axPixelX >= 0 && axPixelX <= axPos(3) ...
                  && axPixelY >= 0 && axPixelY <= axPos(4)
                     if obj.CursorMap.isKey(i)
                         cursor = obj.CursorMap(i);
                         if isvalid(cursor)
                             cursor.UpdateFromMouse(axPixelX, axPixelY);
+                        else
+                            fprintf('[CURSOR] onCursorMotion: cursor at idx=%d INVALID\n', i);
                         end
+                    else
+                        fprintf('[CURSOR] onCursorMotion: CursorMap has NO key %d\n', i);
                     end
                     obj.FocusedAxes = i;
                     return
                 end
             end
-
-            % Mouse not over any axes → hide all cursors
-            obj.HideCursor();
         end
 
         % ================================================================
         %  Private: utilities
         % ================================================================
-
-        function deleteDataLines(~, ax)
-        %DELETEDATALINES  Remove all data lines from axes, preserving cursors.
-        %   Uses findobj for R2025b compatibility (ax.Children may be unreliable).
-
-            % Delete data lines (non-cursor)
-            allLines = findobj(ax, 'Type', 'line');
-            for i = 1:numel(allLines)
-                if ~strcmp(allLines(i).Tag, 'cursor')
-                    delete(allLines(i));
-                end
-            end
-
-            % Delete ConstantLine objects (xline/created by other code)
-            cl = findobj(ax, 'Type', 'constantline');
-            for i = 1:numel(cl)
-                delete(cl(i));
-            end
-
-            % Delete text annotations
-            txt = findobj(ax, 'Type', 'text');
-            for i = 1:numel(txt)
-                delete(txt(i));
-            end
-        end
 
         function refreshLegend(obj, ax) %#ok<INUSU>
         %REFRESHLEGEND  Show legend only when 2+ lines exist.

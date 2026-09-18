@@ -9,6 +9,13 @@ classdef TestTransferFunctionView < matlab.unittest.TestCase
 
     methods (TestMethodSetup)
         function createFixture(testCase)
+            root = fileparts(fileparts(mfilename('fullpath')));
+            addpath(fullfile(root, 'view'));
+            addpath(fullfile(root, 'view', 'components'));
+            addpath(fullfile(root, 'model'));
+            addpath(fullfile(root, 'presenter'));
+            addpath(fullfile(root, 'service'));
+            addpath(root);
             testCase.Fig = uifigure('Visible', 'off');
             tabGroup = uitabgroup(testCase.Fig);
             tab = uitab(tabGroup, 'Title', 'Test');

@@ -146,7 +146,7 @@ classdef TimeSeriesPresenter < handle
             end
 
             function addResultsToSession(obj, results)
-                existingPaths = obj.Session.DatasetPaths_;
+                existingPaths = obj.Session.GetAllDatasetPaths();
                 added = 0;
                 for i = 1:numel(results)
                     if any(strcmp(results{i}.matPath, existingPaths))
@@ -267,6 +267,12 @@ classdef TimeSeriesPresenter < handle
                 end
 
                 obj.View.RenderWaveform(axesIdx, xCell, yCell, labels, colorList, rightYData);
+
+                % Set cursor readout: X=index (no unit), Y=engineering units
+                obj.View.SetCursorLabelFormatter(axesIdx, ...
+                    @(x, y) sprintf('X: %d\nY: %s', ...
+                        round(x), ...
+                        DataPreparationService.FormatEngValue(y)));
             end
 
             function RefreshChannelTable(obj)
@@ -357,20 +363,7 @@ classdef TimeSeriesPresenter < handle
                     d = evt.Data;
                     axIdx = obj.View.FocusedAxes;
 
-                    chans = obj.Session.GetAxesChannels(axIdx);
-                    if isempty(DataPreparationService.FindChannel(chans, d.datasetIdx, d.colIdx))
-                        obj.View.ShowError('请先勾选该通道到当前 axes');
-                        return
-                    end
-
-                    refs = obj.Session.GetRightYChannel(axIdx);
-                    for i = 1:numel(refs)
-                        if refs{i}.DatasetIdx == d.datasetIdx && refs{i}.ColIdx == d.colIdx
-                            obj.View.ShowError('该通道已设为右 Y 轴，请先恢复');
-                            return
-                        end
-                    end
-
+                    % Set X channel reference (works without checking the channel)
                     obj.Session.SetXChannel(axIdx, d.datasetIdx, d.colIdx);
                     obj.syncViewAxisState(axIdx);
                     obj.RenderAxes(axIdx);
@@ -403,18 +396,7 @@ classdef TimeSeriesPresenter < handle
                     d = evt.Data;
                     axIdx = obj.View.FocusedAxes;
 
-                    chans = obj.Session.GetAxesChannels(axIdx);
-                    if isempty(DataPreparationService.FindChannel(chans, d.datasetIdx, d.colIdx))
-                        obj.View.ShowError('请先勾选该通道到当前 axes');
-                        return
-                    end
-
-                    [xDsIdx, xColIdx] = obj.Session.GetXChannel(axIdx);
-                    if ~isempty(xDsIdx) && xDsIdx == d.datasetIdx && xColIdx == d.colIdx
-                        obj.View.ShowError('该通道已设为横轴，请先恢复');
-                        return
-                    end
-
+                    % Set right-Y reference (works without checking the channel)
                     obj.Session.SetRightYChannel(axIdx, d.datasetIdx, d.colIdx);
                     obj.syncViewAxisState(axIdx);
                     obj.RenderAxes(axIdx);
@@ -708,7 +690,7 @@ classdef TimeSeriesPresenter < handle
 
                     [xDsIdx, xColIdx] = obj.Session.GetXChannel(i);
                     if ~isempty(xDsIdx)
-                        dsName = obj.Session.DatasetPaths_{xDsIdx};
+                        dsName = obj.Session.GetDatasetPath(xDsIdx);
                         ds = obj.Session.GetDataset(xDsIdx);
                         xlabel(sub, sprintf('%s / %s', dsName, ds.GetColumnName(xColIdx)));
                     else
@@ -804,7 +786,7 @@ classdef TimeSeriesPresenter < handle
                 hold(ax1, 'off'); hold(ax2, 'off');
                 set(ax2, 'XScale', 'log');
                 if hasXChannel
-                    dsName = obj.Session.DatasetPaths_{xDsIdx};
+                    dsName = obj.Session.GetDatasetPath(xDsIdx);
                     ds = obj.Session.GetDataset(xDsIdx);
                     xlabel(ax1, sprintf('%s / %s', dsName, ds.GetColumnName(xColIdx)));
                 else
@@ -955,6 +937,7 @@ classdef TimeSeriesPresenter < handle
                         end
 
                         tempDir = tempname; mkdir(tempDir);
+                        cleanupDir = onCleanup(@() rmdir(tempDir, 's')); %#ok<NASGU>
                         matPath = DataReaderFactory.SaveStandard(result, {resultName}, tempDir, resultName, 'calc', 'calc');
                         newDs = DataReaderFactory.LoadStandard(matPath);
                         obj.Session.AddDataset(newDs, resultName, matPath);
@@ -1118,7 +1101,7 @@ classdef TimeSeriesPresenter < handle
                 channelMap  = zeros(0, 2);
                 for d = 1:obj.Session.DatasetCount
                     ds = obj.Session.GetDataset(d);
-                    dsName = obj.Session.DatasetPaths_{d};
+                    dsName = obj.Session.GetDatasetPath(d);
                     for c = 1:ds.ColumnCount
                         channelList{end+1} = sprintf('%s > %s', dsName, ds.GetColumnName(c)); %#ok<AGROW>
                         channelMap(end+1, :) = [d, c]; %#ok<AGROW>
@@ -1130,7 +1113,7 @@ classdef TimeSeriesPresenter < handle
             %ENSURESAMPLERATE  Prompt for sample rate if not yet set.
                 sr = obj.Session.GetSampleRate(datasetIdx);
                 if isempty(sr) || isnan(sr) || sr <= 0
-                    dsName = obj.Session.DatasetPaths_{datasetIdx};
+                    dsName = obj.Session.GetDatasetPath(datasetIdx);
                     [answer, ok] = obj.View.ShowSampleRateDialog(dsName);
                     if ok && ~isempty(answer) && answer > 0
                         sr = answer;

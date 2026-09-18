@@ -251,5 +251,26 @@ classdef DataPreparationService
                 tag = sprintf(' [%d~%d L%d]', sr(1), sr(2), segLen);
             end
         end
+
+        function str = FormatEngValue(val)
+        %FORMATENGVALUE  Format a value with automatic engineering units.
+        %   Assumes input is in meters (SI). Auto-selects m/mm/um/nm.
+        %
+        %   str = DataPreparationService.FormatEngValue(0.005)
+        %   returns '5.000 mm'
+        %
+        %   str = DataPreparationService.FormatEngValue(5e-6)
+        %   returns '5.000 um'
+            av = abs(val);
+            if av >= 1
+                str = sprintf('%.3f m', val);
+            elseif av >= 1e-3
+                str = sprintf('%.3f mm', val * 1e3);
+            elseif av >= 1e-6
+                str = sprintf('%.3f um', val * 1e6);
+            else
+                str = sprintf('%.3f nm', val * 1e9);
+            end
+        end
     end
 end

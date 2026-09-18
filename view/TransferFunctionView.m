@@ -121,9 +121,12 @@ classdef TransferFunctionView < handle
         end
 
         function ClearPlots(obj)
-            obj.deleteDataLines(obj.AmpAxes);
-            obj.deleteDataLines(obj.PhaseAxes);
-            obj.deleteDataLines(obj.CorrAxes);
+            ViewUtils.DeleteDataLines(obj.AmpAxes);
+            ViewUtils.DeleteDataLines(obj.PhaseAxes);
+            ViewUtils.DeleteDataLines(obj.CorrAxes);
+            legend(obj.AmpAxes, 'off');
+            legend(obj.PhaseAxes, 'off');
+            legend(obj.CorrAxes, 'off');
         end
 
         % ================================================================
@@ -157,6 +160,16 @@ classdef TransferFunctionView < handle
             obj.refreshLegendFor(obj.AmpAxes);
             obj.refreshLegendFor(obj.PhaseAxes);
             obj.refreshLegendFor(obj.CorrAxes);
+        end
+
+        function SetCursorLabelFormatter(obj, idx, fcn)
+        %SETCURSORLABELFORMATTER  Set label formatter for cursor by index.
+        %   idx: 1=Amp, 2=Phase, 3=Corr
+            switch idx
+                case 1, if ~isempty(obj.AmpCursor),   obj.AmpCursor.LabelFormatterFcn   = fcn; end
+                case 2, if ~isempty(obj.PhaseCursor), obj.PhaseCursor.LabelFormatterFcn = fcn; end
+                case 3, if ~isempty(obj.CorrCursor),  obj.CorrCursor.LabelFormatterFcn  = fcn; end
+            end
         end
 
         function ShowLoading(obj, msg)
@@ -275,7 +288,6 @@ classdef TransferFunctionView < handle
 
         function onCursorMotion(obj)
         %ONCURSORMOTION  Drive whichever cursor the mouse is over.
-        %   Fires CursorSync event so Presenter can synchronize the others.
             if obj.SuppressSync, return; end
 
             fig = ancestor(obj.Grid, 'figure');
@@ -289,7 +301,11 @@ classdef TransferFunctionView < handle
                 ax = axesList{i};
                 if isempty(ax) || ~isvalid(ax), continue; end
 
-                axPos = hgconvertunits(fig, ax.Position, ax.Units, 'pixels', fig);
+                % Hit-test using pixels (same coordinate system as fig.CurrentPoint)
+                oldU = ax.Units; ax.Units = 'pixels';
+                axPos = ax.Position;
+                ax.Units = oldU;
+
                 px = cp(1) - axPos(1);
                 py = cp(2) - axPos(2);
 
@@ -311,20 +327,6 @@ classdef TransferFunctionView < handle
     end
 
     methods (Access = private)
-        function deleteDataLines(~, ax)
-        %DELETEDATALINES  Remove data lines, preserve cursor objects.
-            allLines = findobj(ax, 'Type', 'line');
-            for i = 1:numel(allLines)
-                if ~strcmp(allLines(i).Tag, 'cursor')
-                    delete(allLines(i));
-                end
-            end
-            cl = findobj(ax, 'Type', 'constantline');
-            for i = 1:numel(cl), delete(cl(i)); end
-            txt = findobj(ax, 'Type', 'text');
-            for i = 1:numel(txt), delete(txt(i)); end
-        end
-
         function refreshLegendFor(~, ax)
         %REFRESHLEGENDFOR  Show legend only when 2+ data lines exist.
             allLines = findobj(ax, 'Type', 'line');

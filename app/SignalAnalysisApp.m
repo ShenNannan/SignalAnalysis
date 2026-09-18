@@ -80,8 +80,10 @@
 
         function onMouseMoved(obj)
         %ONMOUSEMOVED  Unified cursor dispatch for both tabs.
-        %   Host owns WindowButtonMotionFcn; dispatches to active view.
-            % --- Legend refresh (deferred to mouse move) ---
+            if isempty(obj.TimeSeriesView) || isempty(obj.TransferFunctionView)
+                return
+            end
+
             if obj.PendingLegendRefresh
                 obj.PendingLegendRefresh = false;
                 if isequal(obj.TabGroup.SelectedTab, obj.TabGroup.Children(2))
@@ -91,7 +93,7 @@
                 end
             end
 
-            % --- Dispatch cursor motion to active tab view ---
+            % Dispatch to active tab
             if isequal(obj.TabGroup.SelectedTab, obj.TabGroup.Children(2))
                 obj.TransferFunctionView.ProcessMouseMotion();
             else
@@ -114,10 +116,11 @@
 
     methods (Static, Access = private)
         function settleUI()
-            for k = 1:40
-                drawnow;
-                pause(0.025);
+            for k = 1:10
+                drawnow limitrate;
+                pause(0.01);
             end
+            drawnow;
         end
     end
 end
