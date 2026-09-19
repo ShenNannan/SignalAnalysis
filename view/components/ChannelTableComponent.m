@@ -204,9 +204,9 @@ classdef ChannelTableComponent < handle
                         isLast = (i == numel(rows)) || rows(i+1).isParent ...
                               || rows(i+1).datasetIdx ~= parentDs;
                         if isLast
-                            names{end+1} = ['    └─ ' shortLabel]; %#ok<AGROW>
+                            names{end+1} = [' └─ ' shortLabel]; %#ok<AGROW>
                         else
-                            names{end+1} = ['    ├─ ' shortLabel]; %#ok<AGROW>
+                            names{end+1} = [' ├─ ' shortLabel]; %#ok<AGROW>
                         end
                         visMap(end+1) = i;                    %#ok<AGROW>
                     end
