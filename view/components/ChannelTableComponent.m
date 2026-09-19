@@ -207,7 +207,7 @@ classdef ChannelTableComponent < handle
                         if startsWith(shortLabel, '/')
                             shortLabel = strtrim(extractAfter(shortLabel, 1));
                         end
-                        names{end+1} = shortLabel;          %#ok<AGROW>
+                        names{end+1} = ['    ' shortLabel]; %#ok<AGROW>
                         visMap(end+1) = i;                    %#ok<AGROW>
                     end
                 end

@@ -371,15 +371,10 @@ classdef CursorComponent < handle
 
             % Expensive operations only when snap point changes
             if snapChanged
-                % Hover text: fixed pixel offset (uses correct Y range)
+                % Hover text: fixed pixel offset (always in leftY space)
                 axPos = hgconvertunits(ancestor(ax,'figure'), ax.Position, ax.Units, 'pixels', ancestor(ax,'figure'));
                 pxPerDataX = max(axPos(3) / xRange, eps);
-                if bestIsRightY && hasRightY
-                    yOffRange = max(ylRight(2) - ylRight(1), eps);
-                else
-                    yOffRange = max(ylLeft(2) - ylLeft(1), eps);
-                end
-                pxPerDataY = max(axPos(4) / yOffRange, eps);
+                pxPerDataY = max(axPos(4) / max(ylLeft(2) - ylLeft(1), eps), eps);
                 xOff = obj.HOVER_OFFSET_PX / pxPerDataX;
                 yOff = obj.HOVER_OFFSET_PX / pxPerDataY;
                 obj.HoverTextH.Position = [bestSnapX + xOff, displayY + yOff, 0];

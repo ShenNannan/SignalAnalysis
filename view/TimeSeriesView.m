@@ -154,7 +154,9 @@ classdef TimeSeriesView < handle
             if hasRightY
                 ax.YAxis(2).Visible = 'on';
                 yyaxis(ax, 'left');
-                hold(ax, 'on');
+                ax.LineStyleOrder = '-';
+                ax.LineStyleOrderIndex = 1;
+                ax.ColorOrderIndex = 1;
                 for c = 1:numel(yCell)
                     displayName = DataPreparationService.ShortLabel(labels{c});
                     h = plot(ax, xCell{c}, yCell{c}, ...
@@ -163,10 +165,11 @@ classdef TimeSeriesView < handle
                         'Tag', 'leftY');
                     h.ButtonDownFcn = @(s,e) obj.onAxesButtonDown(axesIdx, e);
                 end
-                hold(ax, 'off');
 
                 yyaxis(ax, 'right');
-                hold(ax, 'on');
+                ax.LineStyleOrder = '--';
+                ax.LineStyleOrderIndex = 1;
+                ax.ColorOrderIndex = 1;
                 for c = 1:numel(rightYData.x)
                     h = plot(ax, rightYData.x{c}, rightYData.y{c}, ...
                         'Color', rightYData.colors{c}, 'LineWidth', 1, ...
@@ -174,11 +177,12 @@ classdef TimeSeriesView < handle
                         'Tag', 'rightY');
                     h.ButtonDownFcn = @(s,e) obj.onAxesButtonDown(axesIdx, e);
                 end
-                hold(ax, 'off');
                 yyaxis(ax, 'left');
             else
                 yyaxis(ax, 'left');
-                hold(ax, 'on');
+                ax.LineStyleOrder = '-';
+                ax.LineStyleOrderIndex = 1;
+                ax.ColorOrderIndex = 1;
                 for c = 1:numel(yCell)
                     displayName = DataPreparationService.ShortLabel(labels{c});
                     h = plot(ax, xCell{c}, yCell{c}, ...
@@ -187,7 +191,6 @@ classdef TimeSeriesView < handle
                         'Tag', 'leftY');
                     h.ButtonDownFcn = @(s,e) obj.onAxesButtonDown(axesIdx, e);
                 end
-                hold(ax, 'off');
             end
 
             grid(ax, 'on');
