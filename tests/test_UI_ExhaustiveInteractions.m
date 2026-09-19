@@ -337,27 +337,23 @@ classdef test_UI_ExhaustiveInteractions < matlab.unittest.TestCase
         %% ===== 路径 18: 重命名 =====
 
         function test_18_RenameCommit(testCase)
-        %路径18: 右键→重命名→提交
+        %路径18: 内联重命名→提交
             testCase.loadMockData();
             testCase.selectRow(1);
-            testCase.openContextMenu();
-            cm = testCase.getContextMenu();
-            m = findMenuByText(cm, '重命名');
-            m.MenuSelectedFcn(m, []);
-            pause(0.02);
 
             cap = EventCapture();
-            lh = addlistener(testCase.View, 'InlineRenameDataset', @(~,e) cap.store(e));
+            lh = addlistener(testCase.View, 'ItemRenameRequested', @(~,e) cap.store(e));
             th = testCase.View.TableComp.GetTableHandle();
-            col = th.Data.Properties.VariableNames{2};
-            colData = th.Data.(col);
-            colData{1} = 'NewDS';
-            th.Data.(col) = colData;
-            th.CellEditCallback(th, struct('Indices', [1, 2]));
+            oldRaw = th.Data{1, 2};
+            if iscell(oldRaw), oldRaw = oldRaw{1}; end
+            th.CellEditCallback(th, struct( ...
+                'Indices', [1, 2], ...
+                'PreviousData', oldRaw, ...
+                'NewData', 'NewDS'));
             pause(0.05);
 
             testCase.verifyNotEmpty(cap.Events);
-            testCase.verifyEqual(cap.Events{1}.action, 'renameDataset');
+            testCase.verifyEqual(cap.Events{1}.action, 'rename');
             delete(lh);
         end
 

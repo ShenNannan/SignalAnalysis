@@ -76,8 +76,7 @@ classdef TimeSeriesPresenter < handle
                 obj.track(addlistener(v, 'SliceDialogClicked',     @obj.OnSliceDialog));
                 obj.track(addlistener(v, 'SliceResetClicked',      @obj.OnSliceReset));
                 obj.track(addlistener(v, 'SetSampleRateClicked',   @obj.OnSetSampleRate));
-                obj.track(addlistener(v, 'InlineRenameChannel',    @obj.OnInlineRenameChannel));
-                obj.track(addlistener(v, 'InlineRenameDataset',    @obj.OnInlineRenameDataset));
+                obj.track(addlistener(v, 'ItemRenameRequested',    @obj.OnItemRename));
                 obj.track(addlistener(v, 'SetXAxisClicked',        @obj.OnSetXAxis));
                 obj.track(addlistener(v, 'ClearXAxisClicked',      @obj.OnClearXAxis));
                 obj.track(addlistener(v, 'SetRightYAxisClicked',   @obj.OnSetRightYAxis));
@@ -531,31 +530,19 @@ classdef TimeSeriesPresenter < handle
                 end
             end
 
-            function OnInlineRenameChannel(obj, ~, evt)
+            function OnItemRename(obj, ~, evt)
+            %ONITEMRENAME  Unified rename handler for datasets and channels.
                 try
                     d = evt.Data;
-                    ds = obj.Session.GetDataset(d.datasetIdx);
-                    currentName = ds.GetColumnName(d.colIdx);
-                    newName = strtrim(d.newName);
-                    if isempty(newName) || newName == string(currentName), return; end
-                    obj.RenameChannel(d.datasetIdx, d.colIdx, newName);
-                    obj.RefreshChannelTable();
-                    obj.RenderAxes(obj.View.FocusedAxes);
-                catch e
-                    obj.View.ShowError(e.message);
-                end
-            end
-
-            function OnInlineRenameDataset(obj, ~, evt)
-                try
-                    d = evt.Data;
-                    currentName = obj.Session.GetDatasetName(d.datasetIdx);
-                    newName = strtrim(d.newName);
-                    if isempty(newName) || newName == string(currentName), return; end
-                    obj.Session.SetDatasetName(d.datasetIdx, newName);
-                    matPath = obj.Session.GetDatasetPath(d.datasetIdx);
-                    if ~isempty(matPath)
-                        DataReaderFactory.UpdateDatasetNameInMat(matPath, newName);
+                    if isempty(d.newName) || strcmp(d.oldName, d.newName), return; end
+                    if d.isParent
+                        obj.Session.SetDatasetName(d.datasetIdx, d.newName);
+                        matPath = obj.Session.GetDatasetPath(d.datasetIdx);
+                        if ~isempty(matPath)
+                            DataReaderFactory.UpdateDatasetNameInMat(matPath, d.newName);
+                        end
+                    else
+                        obj.RenameChannel(d.datasetIdx, d.colIdx, d.newName);
                     end
                     obj.RefreshChannelTable();
                     obj.RenderAxes(obj.View.FocusedAxes);

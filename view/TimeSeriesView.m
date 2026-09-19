@@ -19,8 +19,7 @@ classdef TimeSeriesView < handle
 
         % Proxied from ChannelTableComponent.ActionRequested
         ChannelCheckChanged     % struct('datasetIdx',..,'colIdx',..,'checked',..)
-        InlineRenameDataset     % struct('datasetIdx',..,'newName',..)
-        InlineRenameChannel     % struct('datasetIdx',..,'colIdx',..,'newName',..)
+        ItemRenameRequested     % struct('oldName','...','newName','...','isParent',T/F,'datasetIdx',..,'colIdx',..)
         SetSampleRateClicked    % struct('datasetIdx',..)
         SliceDialogClicked      % struct('datasetIdx',..,'colIdx',..)
         SliceResetClicked       % struct('datasetIdx',..,'colIdx',..)
@@ -605,6 +604,8 @@ classdef TimeSeriesView < handle
             % --- ChannelTable events (generic action bus) ---
             addlistener(obj.TableComp, 'ActionRequested', ...
                 @(s,e) obj.onTableAction(e));
+            addlistener(obj.TableComp, 'ItemRenameRequested', ...
+                @(s,e) notify(obj, 'ItemRenameRequested', e));
         end
 
         % ================================================================
@@ -680,10 +681,6 @@ classdef TimeSeriesView < handle
             switch action
                 case 'checkChanged'
                     notify(obj, 'ChannelCheckChanged', e);
-                case 'renameDataset'
-                    notify(obj, 'InlineRenameDataset', e);
-                case 'renameChannel'
-                    notify(obj, 'InlineRenameChannel', e);
                 case 'setSampleRate'
                     notify(obj, 'SetSampleRateClicked', e);
                 case 'slice'

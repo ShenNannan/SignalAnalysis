@@ -68,24 +68,19 @@ classdef TestChannelTableComponent < matlab.unittest.TestCase
         end
 
         function startRename(testCase, visRow)
+        %STARTRENAME  No-op: column 2 is now always editable.
             testCase.selectRow(visRow);
-            testCase.openContextMenu();
-            cm = testCase.getContextMenu();
-            m = findMenuByText(cm, '重命名');
-            m.MenuSelectedFcn(m, []);
-            pause(0.02);
         end
 
         function commitRename(testCase, visRow, newName)
             th = testCase.Comp.GetTableHandle();
-            % R2025b-safe: extract column as cell, modify, write back
-            data = th.Data;
-            colName = data.Properties.VariableNames{2};
-            col = data.(colName);    % explicit copy
-            col{visRow} = newName;   % standard cell assignment
-            data.(colName) = col;    % write back
-            th.Data = data;
-            th.CellEditCallback(th, struct('Indices', [visRow, 2]));
+            oldRaw = th.Data{visRow, 2};
+            if iscell(oldRaw), oldRaw = oldRaw{1}; end
+            % Fire CellEditCallback with PreviousData + NewData
+            th.CellEditCallback(th, struct( ...
+                'Indices', [visRow, 2], ...
+                'PreviousData', oldRaw, ...
+                'NewData', newName));
             pause(0.05);
         end
 
@@ -253,17 +248,16 @@ classdef TestChannelTableComponent < matlab.unittest.TestCase
             testCase.startRename(1);
 
             cap = EventCapture();
-            lh = addlistener(testCase.Comp, 'ActionRequested', ...
+            lh = addlistener(testCase.Comp, 'ItemRenameRequested', ...
                 @(~,e) cap.store(e));
             testCase.commitRename(1, 'RenamedDS');
 
             testCase.verifyNotEmpty(cap.Events);
             p = cap.Events{1};
-            testCase.verifyEqual(p.action, 'renameDataset');
+            testCase.verifyEqual(p.action, 'rename');
+            testCase.verifyTrue(p.isParent);
             testCase.verifyEqual(p.datasetIdx, 1);
-            % R2025b: table {} extraction may wrap in cell
-            val = p.value; if iscell(val), val = val{1}; end
-            testCase.verifyEqual(val, 'RenamedDS');
+            testCase.verifyEqual(p.newName, 'RenamedDS');
             delete(lh);
         end
 
@@ -272,35 +266,31 @@ classdef TestChannelTableComponent < matlab.unittest.TestCase
             testCase.startRename(2);
 
             cap = EventCapture();
-            lh = addlistener(testCase.Comp, 'ActionRequested', ...
+            lh = addlistener(testCase.Comp, 'ItemRenameRequested', ...
                 @(~,e) cap.store(e));
             testCase.commitRename(2, 'new_ch1');
 
             testCase.verifyNotEmpty(cap.Events);
             p = cap.Events{1};
-            testCase.verifyEqual(p.action, 'renameChannel');
+            testCase.verifyEqual(p.action, 'rename');
+            testCase.verifyFalse(p.isParent);
             testCase.verifyEqual(p.datasetIdx, 1);
             testCase.verifyEqual(p.colIdx, 1);
-            % R2025b: table {} extraction may wrap in cell
-            val = p.value; if iscell(val), val = val{1}; end
-            testCase.verifyEqual(val, 'new_ch1');
+            testCase.verifyEqual(p.newName, 'new_ch1');
             delete(lh);
         end
 
-        function test_RenameEmpty_Behavior(testCase)
-        %KNOWN_R2025B: In R2025b, table {} extraction wraps char in cell,
-        %   so isempty() returns false for empty strings. The component's
-        %   empty-rename guard does not fire. This test documents the behavior.
+        function test_RenameEmpty_Rollback(testCase)
+        %Empty input should be rolled back (no event fires).
             testCase.startRename(1);
 
             cap = EventCapture();
-            lh = addlistener(testCase.Comp, 'ActionRequested', ...
+            lh = addlistener(testCase.Comp, 'ItemRenameRequested', ...
                 @(~,e) cap.store(e));
             testCase.commitRename(1, '   ');
 
-            % R2025b: isempty on cell('') is false → rename fires
-            testCase.verifyNotEmpty(cap.Events, ...
-                'R2025b: empty rename fires due to cell wrapping');
+            testCase.verifyEmpty(cap.Events, ...
+                'Empty rename should be rolled back');
             delete(lh);
         end
 
@@ -308,7 +298,7 @@ classdef TestChannelTableComponent < matlab.unittest.TestCase
             testCase.startRename(1);
 
             cap = EventCapture();
-            lh = addlistener(testCase.Comp, 'ActionRequested', ...
+            lh = addlistener(testCase.Comp, 'ItemRenameRequested', ...
                 @(~,e) cap.store(e));
             testCase.commitRename(1, 'DS1');
 
@@ -316,18 +306,21 @@ classdef TestChannelTableComponent < matlab.unittest.TestCase
             delete(lh);
         end
 
-        function test_RenameAbort(testCase)
+        function test_RenameDirtyInput_SelfHeals(testCase)
+        %Garbage input with embedded tree chars is decoded by getCleanName.
             testCase.startRename(1);
 
-            % Click different row → abort rename
-            testCase.selectRow(2);
-
             cap = EventCapture();
-            lh = addlistener(testCase.Comp, 'ActionRequested', ...
+            lh = addlistener(testCase.Comp, 'ItemRenameRequested', ...
                 @(~,e) cap.store(e));
-            testCase.commitRename(1, 'ShouldNotWork');
+            % User types messy input with tree decoration
+            testCase.commitRename(1, '    ├─ RenamedDS  [X]');
 
-            testCase.verifyEmpty(cap.Events, 'Aborted rename should not fire');
+            testCase.verifyNotEmpty(cap.Events, ...
+                'Self-healing should decode and emit rename');
+            p = cap.Events{1};
+            testCase.verifyEqual(p.newName, 'RenamedDS');
+            testCase.verifyEqual(p.oldName, 'DS1');
             delete(lh);
         end
 

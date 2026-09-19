@@ -12,6 +12,7 @@ classdef ChannelTableComponent < handle
 
     events
         ActionRequested
+        ItemRenameRequested  % struct('oldName','...','newName','...','isParent',T/F,'datasetIdx',..,'colIdx',..)
     end
 
     properties (SetAccess = private)
@@ -30,12 +31,9 @@ classdef ChannelTableComponent < handle
         % Internal state flags
         Highlighting logical = false
         Rebuilding   logical = false
-        Renaming     logical = false
-        RenameOriginal  string = ""
         LastClickedRow  double = 0
 
         % Menu item handles (for Enable toggling)
-        MenuRename
         MenuSampleRate
         MenuExportExcel
         MenuSlice
@@ -117,8 +115,9 @@ classdef ChannelTableComponent < handle
         function buildTable(obj)
             obj.TableH = uitable(obj.ParentFig, ...
                 'ColumnName',           {'选择', '数据集'}, ...
-                'ColumnEditable',       [true false], ...
+                'ColumnEditable',       [true true], ...
                 'ColumnWidth',          {38, '1x'}, ...
+                'FontName',             'Consolas', ...
                 'SelectionHighlight',   'on');
 
             obj.TableH.Data = table(false(0,1), cell(0,1), ...
@@ -132,8 +131,6 @@ classdef ChannelTableComponent < handle
             fig = ancestor(obj.TableH, 'figure');
             cm  = uicontextmenu(fig);
 
-            obj.MenuRename      = uimenu(cm, 'Text', '重命名', ...
-                'MenuSelectedFcn', @(s,e) obj.onContextRename());
             obj.MenuSampleRate  = uimenu(cm, 'Text', '设置采样频率...', ...
                 'MenuSelectedFcn', @(s,e) obj.fire('setSampleRate'));
             obj.MenuExportExcel = uimenu(cm, 'Text', '导出 Excel', ...
@@ -163,7 +160,7 @@ classdef ChannelTableComponent < handle
     methods (Access = private)
 
         function rebuildData(obj)
-        %REBUILDDATA  Rebuild visible rows respecting ExpandedSets.
+        %REBUILDDATA  Rebuild visible rows with Unicode tree topology.
             rows = obj.ChannelRows;
             if isempty(rows)
                 obj.Rebuilding = true;
@@ -181,7 +178,6 @@ classdef ChannelTableComponent < handle
             for i = 1:numel(rows)
                 r = rows(i);
                 if r.isParent
-                    % Dataset row: always visible
                     checked{end+1} = logical(r.checked);  %#ok<AGROW>
                     if isempty(r.datasetName)
                         names{end+1} = r.label;           %#ok<AGROW>
@@ -189,16 +185,13 @@ classdef ChannelTableComponent < handle
                         names{end+1} = r.datasetName;     %#ok<AGROW>
                     end
                     visMap(end+1) = i;                     %#ok<AGROW>
-                    % If collapsed, skip children
                     dsKey = num2str(r.datasetIdx);
                     if obj.ExpandedSets.isKey(dsKey) && obj.ExpandedSets(dsKey)
                         % expanded → continue to show children
                     else
-                        % Skip children until next parent
                         continue
                     end
                 else
-                    % Channel row: show only if parent is expanded
                     parentDs = rows(i).datasetIdx;
                     dsKey = num2str(parentDs);
                     if obj.ExpandedSets.isKey(dsKey) && obj.ExpandedSets(dsKey)
@@ -207,7 +200,14 @@ classdef ChannelTableComponent < handle
                         if startsWith(shortLabel, '/')
                             shortLabel = strtrim(extractAfter(shortLabel, 1));
                         end
-                        names{end+1} = ['    ' shortLabel]; %#ok<AGROW>
+                        % Determine if last child in this dataset
+                        isLast = (i == numel(rows)) || rows(i+1).isParent ...
+                              || rows(i+1).datasetIdx ~= parentDs;
+                        if isLast
+                            names{end+1} = ['    └─ ' shortLabel]; %#ok<AGROW>
+                        else
+                            names{end+1} = ['    ├─ ' shortLabel]; %#ok<AGROW>
+                        end
                         visMap(end+1) = i;                    %#ok<AGROW>
                     end
                 end
@@ -232,7 +232,7 @@ classdef ChannelTableComponent < handle
     methods (Access = private)
 
         function onCellEdit(obj, e)
-        %ONCELLEDIT  Checkbox toggle or rename commit.
+        %ONCELLEDIT  Checkbox toggle or inline rename with regex self-healing.
             if obj.Rebuilding || isempty(obj.VisibleRowMap)
                 return
             end
@@ -243,31 +243,32 @@ classdef ChannelTableComponent < handle
             internalIdx = obj.VisibleRowMap(visRow);
             r = obj.ChannelRows(internalIdx);
 
-            % --- Rename commit (column 2) ---
-            if e.Indices(2) == 2 && obj.Renaming
-                if visRow ~= obj.LastClickedRow
-                    obj.Renaming = false;
-                    obj.TableH.ColumnEditable(2) = false;
-                    return
-                end
-                obj.Renaming = false;
-                obj.TableH.ColumnEditable(2) = false;
-                newName = strtrim(obj.TableH.Data{visRow, 2});
-                if isempty(newName) || newName == obj.RenameOriginal
+            % --- Column 2: inline rename with self-healing ---
+            if e.Indices(2) == 2
+                cleanOld = obj.getCleanName(e.PreviousData);
+                cleanNew = obj.getCleanName(e.NewData);
+
+                if isempty(cleanNew) || strcmp(cleanOld, cleanNew)
+                    % Rollback: restore decorated display
                     obj.Rebuilding = true;
-                    obj.setTableCol2(visRow, r.label);
+                    obj.setTableCol2(visRow, e.PreviousData);
                     obj.Rebuilding = false;
                     return
                 end
-                if r.isParent
-                    obj.notifyAction('renameDataset', r.datasetIdx, 0, newName);
-                else
-                    obj.notifyAction('renameChannel', r.datasetIdx, r.colIdx, newName);
-                end
+
+                % Emit pure rename payload → Presenter will re-render with
+                % fresh tree decoration, achieving visual self-healing.
+                payload = struct('action',    'rename', ...
+                                 'oldName',   cleanOld, ...
+                                 'newName',   cleanNew, ...
+                                 'isParent',  r.isParent, ...
+                                 'datasetIdx', r.datasetIdx, ...
+                                 'colIdx',     r.colIdx);
+                notify(obj, 'ItemRenameRequested', AppEventData(payload));
                 return
             end
 
-            % --- Checkbox toggle (column 1) ---
+            % --- Column 1: checkbox toggle ---
             if e.Indices(2) ~= 1, return; end
             val = logical(obj.TableH.Data{visRow, 1});
             payload = struct('action', 'checkChanged', ...
@@ -277,19 +278,22 @@ classdef ChannelTableComponent < handle
             notify(obj, 'ActionRequested', AppEventData(payload));
         end
 
+        function cleanName = getCleanName(~, rawString)
+        %GETCLEANNAME  Regex decoder: strip tree prefixes and axis tags.
+            if isempty(rawString) || (~ischar(rawString) && ~isstring(rawString))
+                cleanName = ''; return;
+            end
+            cleanName = regexprep(char(rawString), '^\s*[├└]─\s*', '');
+            cleanName = regexprep(cleanName, '\s*\[[A-Za-z0-9]+\]\s*$', '');
+            cleanName = strtrim(cleanName);
+        end
+
         function onCellSelect(obj, e)
         %ONCELLSELECT  Row click → expand/collapse datasets.
             if obj.Highlighting || obj.Rebuilding, return; end
 
             if ~isempty(e.Indices)
                 obj.TableH.Selection = [e.Indices(1), 1; e.Indices(1), 2];
-            end
-
-            % Renaming and clicked elsewhere → abort rename
-            if obj.Renaming
-                obj.Renaming = false;
-                obj.TableH.ColumnEditable(2) = false;
-                return
             end
 
             if isempty(e.Indices), return; end
@@ -361,20 +365,6 @@ classdef ChannelTableComponent < handle
             obj.setEnable(obj.MenuSliceReset,  isChannel);
         end
 
-        function onContextRename(obj)
-        %ONCONTEXTRENAME  Enable inline edit on column 2.
-            if isempty(obj.VisibleRowMap), return; end
-            visRow = obj.LastClickedRow;
-            if visRow < 1 || visRow > numel(obj.VisibleRowMap), return; end
-
-            internalIdx = obj.VisibleRowMap(visRow);
-            r = obj.ChannelRows(internalIdx);
-            obj.RenameOriginal = string(r.label);
-            obj.Renaming = true;
-            obj.TableH.ColumnEditable(2) = true;
-            obj.TableH.Selection = [visRow, 2];
-            focus(obj.TableH);
-        end
     end
 
     % ------------------------------------------------------------------
