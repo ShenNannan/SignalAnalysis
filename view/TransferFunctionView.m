@@ -289,6 +289,7 @@ classdef TransferFunctionView < handle
 
         function onCursorMotion(obj)
         %ONCURSORMOTION  Drive whichever cursor the mouse is over.
+        %   Uses getpixelposition(ax, true) for absolute figure-space hit-test.
             if obj.SuppressSync, return; end
 
             fig = ancestor(obj.Grid, 'figure');
@@ -302,18 +303,20 @@ classdef TransferFunctionView < handle
                 ax = axesList{i};
                 if isempty(ax) || ~isvalid(ax), continue; end
 
-                % Hit-test using pixels (same coordinate system as fig.CurrentPoint)
-                oldU = ax.Units; ax.Units = 'pixels';
-                axPos = ax.Position;
-                ax.Units = oldU;
+                % Absolute pixel position in figure space
+                absPos = getpixelposition(ax, true);
+                ti = ax.TightInset;  % [left bottom right top]
 
-                px = cp(1) - axPos(1);
-                py = cp(2) - axPos(2);
+                innerX = absPos(1) + ti(1);
+                innerY = absPos(2) + ti(2);
+                innerW = absPos(3) - ti(1) - ti(3);
+                innerH = absPos(4) - ti(2) - ti(4);
 
-                if px >= 0 && px <= axPos(3) && py >= 0 && py <= axPos(4)
+                if cp(1) >= innerX && cp(1) <= innerX + innerW ...
+                 && cp(2) >= innerY && cp(2) <= innerY + innerH
                     cursor = cursorList{i};
                     if isvalid(cursor)
-                        cursor.UpdateFromMouse(px, py);
+                        cursor.UpdateFromMouse();
                     end
                     return
                 end

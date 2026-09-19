@@ -727,6 +727,8 @@ classdef TimeSeriesView < handle
         function onCursorMotion(obj)
         %ONCURSORMOTION  Route mouse position to the CursorComponent
         %   of whichever axes the pointer is currently over.
+        %   Uses getpixelposition(ax, true) for absolute figure-space hit-test.
+
             fig = ancestor(obj.Grid, 'figure');
             if isempty(fig), return; end
 
@@ -736,30 +738,22 @@ classdef TimeSeriesView < handle
                 ax = obj.GridMgr.GetAxes(i);
                 if isempty(ax) || ~isvalid(ax), continue; end
 
-                % --- Robust coordinate conversion for uifigure + uigridlayout ---
-                % Force both figure and axes to 'pixels', then compute
-                % axes-relative mouse position without hgconvertunits.
-                oldFigU = fig.Units; fig.Units = 'pixels';
-                oldAxU  = ax.Units;  ax.Units  = 'pixels';
+                % Absolute pixel position in figure space (ignores uigridlayout nesting)
+                absPos = getpixelposition(ax, true);
+                ti = ax.TightInset;  % [left bottom right top]
 
-                figPos = fig.InnerPosition;   % [left, bottom, width, height]
-                axPos  = ax.Position;         % relative to parent container
+                % Inner plot area in absolute figure coordinates
+                innerX = absPos(1) + ti(1);
+                innerY = absPos(2) + ti(2);
+                innerW = absPos(3) - ti(1) - ti(3);
+                innerH = absPos(4) - ti(2) - ti(4);
 
-                % Mouse position relative to axes origin
-                % (assumes parent layout starts at figure content area origin)
-                axPixelX = cp(1) - axPos(1);
-                axPixelY = cp(2) - axPos(2);
-
-                fig.Units = oldFigU;
-                ax.Units  = oldAxU;
-
-                % Hit-test: check if mouse is within axes bounds
-                if axPixelX >= 0 && axPixelX <= axPos(3) ...
-                 && axPixelY >= 0 && axPixelY <= axPos(4)
+                if cp(1) >= innerX && cp(1) <= innerX + innerW ...
+                 && cp(2) >= innerY && cp(2) <= innerY + innerH
                     if obj.CursorMap.isKey(i)
                         cursor = obj.CursorMap(i);
                         if isvalid(cursor)
-                            cursor.UpdateFromMouse(axPixelX, axPixelY);
+                            cursor.UpdateFromMouse();
                         end
                     end
                     return

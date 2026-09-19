@@ -120,8 +120,11 @@ classdef CursorComponent < handle
             obj.snapAndDisplay(dataX, true);
         end
 
-        function UpdateFromMouse(obj, mouseXPixel, mouseYPixel)
-        %UPDATEFROMMOUSE  Drive cursor from raw pixel coordinates.
+        function UpdateFromMouse(obj)
+        %UPDATEFROMMOUSE  Drive cursor using native ax.CurrentPoint.
+        %   Caller (L3 View) has already confirmed mouse is in inner area
+        %   via getpixelposition hit-test. Here we trust ax.CurrentPoint
+        %   for the inverse matrix projection to data space.
 
             if obj.IsUpdating, return; end
             if ~isvalid(obj.AxesH), return; end
@@ -130,18 +133,16 @@ classdef CursorComponent < handle
             obj.IsUpdating = true;
             cleanupObj = onCleanup(@() obj.unlock());  %#ok<NASGU>
 
-            % Convert pixel → data using axes-native CurrentPoint
             cp = obj.AxesH.CurrentPoint;
-            mouseXData = cp(1, 1);
-            mouseYData = cp(1, 2);
-            obj.LastMouseYData = mouseYData;
+            targetX = cp(1, 1);
+            obj.LastMouseYData = cp(1, 2);
 
             % Debounce: same X → skip
-            if ~isnan(obj.LastSnappedX) && mouseXData == obj.LastSnappedX
+            if ~isnan(obj.LastSnappedX) && targetX == obj.LastSnappedX
                 return
             end
 
-            obj.snapAndDisplay(mouseXData, false);
+            obj.snapAndDisplay(targetX, false);
         end
 
         function Hide(obj)
@@ -231,9 +232,22 @@ classdef CursorComponent < handle
             end
 
             isLogX = strcmp(ax.XScale, 'log');
-            isLogY = strcmp(ax.YScale, 'log');
             xl = xlim(ax);
             xRange = max(xl(2) - xl(1), eps);
+
+            % Edge clamping: pre-compute global data bounds once
+            isEdgeClamped = false;
+            if ~bypassRadius
+                allXData = [];
+                for k = 1:numel(dataLines)
+                    xd = dataLines(k).XData(:);
+                    if ~isempty(xd), allXData = [allXData; xd]; end
+                end
+                if ~isempty(allXData)
+                    isEdgeClamped = targetX >= max(allXData, [], 'omitnan') ...
+                                 || targetX <= min(allXData, [], 'omitnan');
+                end
+            end
 
             % 1. 正确获取双Y轴物理边界（避免 yyaxis 切换陷阱）
             ylLeft = ax.YAxis(1).Limits;
@@ -303,7 +317,8 @@ classdef CursorComponent < handle
                     dyNorm = abs(snapYNorm - mouseYNorm);
 
                     % 5. X-Only 阈值守卫 (水平距离 < 5% 屏幕宽度即判定吸附)
-                    if dxNorm < 0.05
+                    %    Edge clamping: bypass threshold when at data boundary
+                    if dxNorm < 0.05 || isEdgeClamped
                         visualDistSq = dxNorm^2 + dyNorm^2;
                         if visualDistSq < bestDist
                             bestDist  = visualDistSq;
