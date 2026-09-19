@@ -52,6 +52,7 @@ classdef TimeSeriesView < handle
         Toaster             % AsyncToaster (RAII, auto-closes)
         AxesXChannelMap     % cell: per-axes X-channel ref (for linkaxes grouping)
         HighlightedAxes double = 0  % currently highlighted axes index (0 = none)
+        IsSyncingCursors logical = false  % re-entrancy guard for cross-axes cursor sync
     end
 
     methods
@@ -631,6 +632,10 @@ classdef TimeSeriesView < handle
             addlistener(cursor, 'CursorSnapped', ...
                 @(s,e) notify(obj, 'CursorMotion', e));
 
+            % Cross-axes cursor sync (View-layer closed loop, 0 latency)
+            addlistener(cursor, 'CursorSnapped', ...
+                @(s,e) obj.onCursorSync(s, e));
+
             % Axes click → focus tracking
             hAx.ButtonDownFcn = @(s,e) obj.onAxesButtonDown(idx, e);
 
@@ -762,6 +767,29 @@ classdef TimeSeriesView < handle
                     return
                 end
             end
+        end
+
+        function onCursorSync(obj, srcCursor, e)
+        %ONCURSORCSYNC  Propagate cursor X to all other axes (0-latency).
+            if obj.IsSyncingCursors, return; end
+            targetX = e.Data.x;
+            if isnan(targetX), return; end
+
+            obj.IsSyncingCursors = true;
+            cleanupObj = onCleanup(@() obj.unlockSync()); %#ok<NASGU>
+
+            keys = obj.CursorMap.keys;
+            for k = 1:numel(keys)
+                c = obj.CursorMap(keys{k});
+                if c == srcCursor, continue; end
+                if isvalid(c)
+                    c.SetPosition(targetX);
+                end
+            end
+        end
+
+        function unlockSync(obj)
+            obj.IsSyncingCursors = false;
         end
 
         % ================================================================
