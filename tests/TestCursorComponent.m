@@ -257,11 +257,11 @@ classdef TestCursorComponent < matlab.unittest.TestCase
             captured = {};
             lh = addlistener(cursor, 'CursorSnapped', @(~,e) storeEvent(e));
 
-            % Various pixel coordinates — should never crash
-            cursor.UpdateFromMouse(0, 0);
-            cursor.UpdateFromMouse(-1000, -1000);
-            cursor.UpdateFromMouse(99999, 99999);
-            cursor.UpdateFromMouse(50, 50);
+            % Various calls — should never crash (UpdateFromMouse uses ax.CurrentPoint)
+            cursor.UpdateFromMouse();
+            cursor.UpdateFromMouse();
+            cursor.UpdateFromMouse();
+            cursor.UpdateFromMouse();
 
             testCase.verifyTrue(true, 'All calls completed without crash');
             delete(lh);
@@ -393,7 +393,7 @@ classdef TestCursorComponent < matlab.unittest.TestCase
             lh = addlistener(cursor, 'CursorSnapped', @(~,e) storeEvent(e));
 
             % Must return silently — no Invalid Handle error
-            cursor.UpdateFromMouse(50, 50);
+            cursor.UpdateFromMouse();
             testCase.verifyEmpty(captured, ...
                 'Should silently skip when visuals destroyed by cla');
             delete(lh);

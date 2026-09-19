@@ -434,8 +434,12 @@ classdef TimeSeriesPresenter < handle
                 try
                     d = evt.Data;
                     axIdx = obj.View.FocusedAxes;
-                    obj.Session.SetAxesNormMode(axIdx, d.mode);
-                    if strcmpi(d.mode, 'none')
+
+                    % Convert display value to internal mode key
+                    internalMode = obj.displayToNormMode(d.mode);
+                    obj.Session.SetAxesNormMode(axIdx, internalMode);
+
+                    if strcmpi(internalMode, 'none')
                         obj.Session.SetAxesNormParams(axIdx, struct());
                     else
                         obj.Session.SetAxesNormParams(axIdx, obj.computeNormParams(axIdx));
@@ -443,6 +447,18 @@ classdef TimeSeriesPresenter < handle
                     obj.RenderAxes(axIdx);
                 catch e
                     obj.View.ShowError(e.message);
+                end
+            end
+
+            function mode = displayToNormMode(~, displayValue)
+            %DISPLAYTONORMMODE  Convert dropdown display value to internal key.
+                map = containers.Map( ...
+                    {'None','Min-Max','Z-Score','Mean Zero'}, ...
+                    {'none','minmax','zscore','meanzero'});
+                if map.isKey(displayValue)
+                    mode = map(displayValue);
+                else
+                    mode = lower(displayValue);
                 end
             end
         end
@@ -762,7 +778,7 @@ classdef TimeSeriesPresenter < handle
                         chan.Data, xRaw, chan.SliceRange, hasXChannel);
                     sig = obj.ApplyNorm(axIdx, c, sig);
 
-                    chanLabel = chan.Label;
+                    chanLabel = DataPreparationService.ShortLabel(chan.Label);
                     % Match line properties from source axes
                     chanColor  = DataPreparationService.ChannelColor(chan.DatasetIdx, chan.ColIdx, 6);
                     chanStyle  = '-';
@@ -783,7 +799,7 @@ classdef TimeSeriesPresenter < handle
                                 'DisplayName', chanLabel);
                         case 'psd'
                             [cumRms, freq, totalRms] = SignalProcessor.ComputeCumulativeRMS(sig, sampleRate);
-                            label = sprintf('%s (RMS=%.4f)', chanLabel, totalRms);
+                            label = sprintf('%s (RMS=%.6g)', chanLabel, totalRms);
                             [freq, cumRms] = SignalProcessor.SkipZeroFreq(freq, cumRms);
                             semilogx(ax2, freq, cumRms, 'Color', chanColor, 'LineStyle', chanStyle, ...
                                 'DisplayName', label);
@@ -1033,6 +1049,8 @@ classdef TimeSeriesPresenter < handle
 
             function normParams = computeNormParams(obj, axIdx)
             %COMPUTENORMPARAMS  Compute normalization stats from visible window.
+            %   Only computes stats for left-Y channels (excludes right-Y and X-channel),
+            %   matching the filtering in RenderAxes / PrepareMultiChannel.
                 [xl, ~, ~] = obj.View.GetAxesLimits(axIdx);
                 if isempty(xl)
                     normParams = struct(); return
@@ -1051,9 +1069,23 @@ classdef TimeSeriesPresenter < handle
                     normParams = struct(); return
                 end
 
+                % Filter: exclude right-Y and X-channel (same logic as RenderAxes)
+                rightYRefs = obj.Session.GetRightYChannel(axIdx);
+                rightYSet  = containers.Map('KeyType', 'char', 'ValueType', 'logical');
+                for ri = 1:numel(rightYRefs)
+                    key = sprintf('%d_%d', rightYRefs{ri}.DatasetIdx, rightYRefs{ri}.ColIdx);
+                    rightYSet(key) = true;
+                end
+
                 channelStats = {};
                 for i = 1:numel(chans)
                     chan = chans{i};
+                    chanKey = sprintf('%d_%d', chan.DatasetIdx, chan.ColIdx);
+                    if rightYSet.isKey(chanKey), continue; end
+                    if hasXChannel && chan.DatasetIdx == xDsIdx && chan.ColIdx == xColIdx
+                        continue
+                    end
+
                     [sig, xSig] = ChannelOperations.SliceAndAlign( ...
                         chan.Data, xRaw, chan.SliceRange, hasXChannel);
 
@@ -1108,7 +1140,7 @@ classdef TimeSeriesPresenter < handle
                 channelMap  = zeros(0, 2);
                 for d = 1:obj.Session.DatasetCount
                     ds = obj.Session.GetDataset(d);
-                    dsName = obj.Session.GetDatasetPath(d);
+                    dsName = obj.Session.GetDatasetName(d);
                     for c = 1:ds.ColumnCount
                         channelList{end+1} = sprintf('%s > %s', dsName, ds.GetColumnName(c)); %#ok<AGROW>
                         channelMap(end+1, :) = [d, c]; %#ok<AGROW>
